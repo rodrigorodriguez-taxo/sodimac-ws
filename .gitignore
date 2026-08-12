@@ -1,0 +1,32 @@
+# Configuracion real (credenciales) - NO versionar
+/config/database.php
+/config/acceso_sodimac_db.php
+
+# SOAP server - NO versionar
+/index.php
+
+# Dependencias
+/vendor/
+
+# Archivos temporales y logs
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# Entorno
+.env
+.env.*
+
+# Editores e IDEs
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+nbproject/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
