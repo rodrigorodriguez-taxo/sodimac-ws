@@ -91,10 +91,11 @@ function prepararSincronizacion(PDO $pdo, string $correo, string $rut): array
         'eventos'       => $eventos,
         'productos'     => $productos,
         'zonas_tienda'  => array(
-            0 => array("VENTA",     "Piso de venta y gancheras"),
-            1 => array("ALTILLO",   "Altillos y storage superior"),
-            2 => array("BODEGA",    "Bodega y trastienda"),
-            3 => array("RECEPCION", "Zona de recepcion"),
+            0 => array('ALTILLO',          'Altillo',                                    1000, 2999),
+            1 => array('PUNTO_VENTA',      'Punto de venta',                             3000, 4999),
+            2 => array('BODEGA_TRASTIENDA', 'Zonas de remate / bodegas / trastienda',     5000, 5999),
+            3 => array('EXHIBICIONES',     'Exhibiciones',                               6000, 6999),
+            4 => array('PTO_VTA_OTROS',    'Pto. vta. otros',                            7000, 9999),
         ),
     ];
 }
