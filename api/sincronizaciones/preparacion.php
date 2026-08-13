@@ -62,6 +62,9 @@ function prepararSincronizacion(PDO $pdo, string $correo, string $rut): array
     $fecha = date('Y-m-d');
     $agendas = obtenerAgendas($pdo, $login, $fecha);
     if (!$agendas) {
+        $agendas = obtenerAgendasFallbackPrueba($pdo, $login, $fecha);
+    }
+    if (!$agendas) {
         errorResponse('No existen agendas listas para hoy', 401);
     }
 
@@ -312,6 +315,112 @@ function obtenerAgendas(PDO $pdo, string $login, string $fecha): ?array
         a.secuencia_dia ASC,
         a.numero_agenda ASC,
         a.id_agenda ASC";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([':login' => $login, ':fecha' => $fecha]);
+
+    $agendas = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    return $agendas ?: null;
+}
+
+/* ============================================================================
+   3-B. obtenerAgendasFallbackPrueba  (FALLBACK TEMPORAL PARA PRUEBAS)
+   Si no hay agenda para la fecha actual, busca la ultima agenda operable
+   anterior asignada al usuario con muestra valida.
+   NO USAR COMO REGLA PRODUCTIVA.
+   ============================================================================ */
+
+function obtenerAgendasFallbackPrueba(PDO $pdo, string $login, string $fecha): ?array
+{
+    $sql = "SELECT
+        a.id_agenda,
+        a.numero_agenda,
+        DATE(a.fecha_agenda) AS fecha_agenda,
+        a.secuencia_dia,
+
+        t.id_tienda,
+        t.codigo_tienda,
+        t.nombre_tienda,
+        t.id_zona_operativa,
+        z.codigo_zona,
+        z.nombre_zona,
+
+        ea.codigo_estado AS estado_agenda,
+
+        jo.id_jornada,
+        jo.estado_jornada,
+        COALESCE(jo.fl_jornada_operable, 'N') AS fl_jornada_operable,
+
+        p.id_muestra,
+        p.codigo_muestra,
+        p.nombre_muestra,
+        p.id_kardex,
+        p.codigo_kardex,
+        p.sku_muestra,
+        p.sku_kardex,
+        p.operadores_agenda,
+        p.fl_muestra_ok,
+        p.fl_kardex_ok,
+        p.fl_cobertura_ok,
+        p.fl_operadores_ok,
+        p.fl_lista_conteo,
+        p.estado_preparacion,
+
+        CASE
+            WHEN COALESCE(jo.fl_jornada_operable, 'N') = 'S'
+             AND ea.codigo_estado IN ('PLANIFICADA','ASIGNADA','LISTA','EN_CONTEO')
+             AND COALESCE(p.fl_muestra_ok, 'N') = 'S'
+             AND COALESCE(p.sku_muestra, 0) > 0
+                THEN 'S'
+            ELSE 'N'
+        END AS fl_puede_contar,
+
+        CASE
+            WHEN COALESCE(p.fl_kardex_ok, 'N') = 'S'
+             AND COALESCE(p.fl_cobertura_ok, 'N') = 'S'
+                THEN 'S'
+            ELSE 'N'
+        END AS fl_procesos_posteriores
+
+    FROM sod_ope_agenda AS a
+
+    INNER JOIN sod_cfg_tienda AS t
+            ON t.id_tienda = a.id_tienda
+
+    LEFT JOIN sod_cfg_zona_operativa AS z
+           ON z.id_zona_operativa = t.id_zona_operativa
+
+    INNER JOIN sod_ope_estado_agenda AS ea
+            ON ea.id_estado_agenda = a.id_estado_agenda
+
+    INNER JOIN vw_sod_agenda_preparacion_resumen AS p
+            ON p.id_agenda = a.id_agenda
+
+    INNER JOIN vw_sod_agenda_jornada_operativa AS jo
+            ON jo.id_agenda = a.id_agenda
+
+    WHERE DATE(a.fecha_agenda) <= :fecha
+      AND a.fl_activo = 'S'
+      AND ea.codigo_estado NOT IN ('CERRADA', 'SUSPENDIDA')
+      AND jo.fl_jornada_operable = 'S'
+      AND p.fl_muestra_ok = 'S'
+      AND COALESCE(p.sku_muestra, 0) > 0
+      AND EXISTS (
+            SELECT 1
+            FROM vw_sod_dash_agenda_usuario AS d
+            WHERE d.id_agenda = a.id_agenda
+              AND CONVERT(TRIM(d.login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+                  =
+                  CONVERT(TRIM(:login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+          )
+    ORDER BY
+        DATE(a.fecha_agenda) DESC,
+        t.nombre_tienda ASC,
+        a.secuencia_dia ASC,
+        a.numero_agenda ASC,
+        a.id_agenda ASC
+    LIMIT 1";
 
     $stmt = $pdo->prepare($sql);
     $stmt->execute([':login' => $login, ':fecha' => $fecha]);

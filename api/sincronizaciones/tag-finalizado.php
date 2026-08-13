@@ -2,6 +2,7 @@
 
 require_once '../../config/acceso_sodimac_db.php';
 require_once '../../helpers/response.php';
+require_once 'sgo-captura.service.php';
 
 corsHeaders();
 
@@ -24,7 +25,7 @@ if (!$pdo instanceof PDO) {
     errorResponse('Error de conexion: no se pudo obtener PDO', 500);
 }
 
-// Validar campos obligatorios
+// ──────────── Extraer campos del payload ────────────
 $cargaUid         = trim($input['carga_uid'] ?? '');
 $codigoTienda     = trim($input['codigo_tienda'] ?? '');
 $fechaProgramada  = trim($input['fecha_programada'] ?? '');
@@ -36,7 +37,12 @@ $operadorRut      = trim($input['operador_rut'] ?? '');
 $operadorLogin    = trim($input['operador_login'] ?? '');
 $pdaCodigo        = trim($input['pda_codigo'] ?? '');
 $detalles         = $input['detalles'] ?? null;
+$codigoMuestra    = trim($input['codigo_muestra'] ?? '');
+$idAgenda         = isset($input['id_agenda']) ? (int)$input['id_agenda'] : 0;
+$numeroAgenda     = trim($input['numero_agenda'] ?? '');
+$ubicacionCodigo  = trim($input['ubicacion_codigo'] ?? '');
 
+// ──────────── Validaciones comunes ────────────
 if ($cargaUid === '') {
     errorResponse('Falta carga_uid');
 }
@@ -68,7 +74,7 @@ if (!is_array($detalles) || count($detalles) === 0) {
     errorResponse('Falta detalles o esta vacio');
 }
 
-// Validar y calcular totales
+// ──────────── Validar y calcular totales ────────────
 foreach ($detalles as $idx => $detalle) {
     $sku = trim($detalle['sku'] ?? '');
     $cantidadFisica = $detalle['cantidad_fisica'] ?? null;
@@ -79,6 +85,9 @@ foreach ($detalles as $idx => $detalle) {
     if ($cantidadFisica === null || !is_numeric($cantidadFisica)) {
         errorResponse("Detalle[$idx]: Falta cantidad_fisica o valor invalido");
     }
+    if ((float)$cantidadFisica < 0) {
+        errorResponse("Detalle[$idx]: cantidad_fisica no puede ser negativa");
+    }
 }
 
 $totalProductos = count($detalles);
@@ -87,7 +96,34 @@ foreach ($detalles as $detalle) {
     $totalUnidades += (int)$detalle['cantidad_fisica'];
 }
 
-// Guardar payload completo
+// ──────────── Validaciones para SP (solo iteracion = 1) ────────────
+if ($iteracion === 1) {
+    if ($numeroAgenda === '' || in_array(strtolower($numeroAgenda), ['null', 'undefined'], true)) {
+        errorResponse('Falta numero_agenda para iteracion inicial');
+    }
+    if (!ctype_digit($tagCodigo)) {
+        errorResponse('tag_codigo debe ser numerico para iteracion inicial');
+    }
+
+    foreach ($detalles as $idx => $detalle) {
+        $detalleUid = trim($detalle['detalle_uid'] ?? '');
+        if ($detalleUid === '') {
+            errorResponse("Detalle[$idx]: Falta detalle_uid para iteracion inicial");
+        }
+
+        $codigoUsable = trim($detalle['codigo_lectura'] ?? $detalle['codigo_barras'] ?? $detalle['sku'] ?? '');
+        if ($codigoUsable === '') {
+            errorResponse("Detalle[$idx]: Falta codigo_lectura, codigo_barras o sku");
+        }
+
+        $fechaHora = trim($detalle['fecha_hora'] ?? '');
+        if ($fechaHora === '') {
+            errorResponse("Detalle[$idx]: Falta fecha_hora para iteracion inicial");
+        }
+    }
+}
+
+// ──────────── Guardar payload completo ────────────
 $payloadJson = json_encode($input, JSON_UNESCAPED_UNICODE);
 
 try {
@@ -205,14 +241,35 @@ try {
         ]);
     }
 
+    // ──────────── Fase 5: Llamar servicio SGO para iteracion = 1 ────────────
+    $resultadosSgo = null;
+    if ($iteracion === 1) {
+        $resultadosSgo = registrarCapturaInicialSgo($input, $detalles);
+
+        // Marcar como PROCESADO si todo OK
+        $stmtEstado = $pdo->prepare("
+            UPDATE sod_pda_tag_carga
+            SET estado = 'PROCESADO',
+                mensaje_error = NULL,
+                fecha_procesado = NOW()
+            WHERE carga_uid = :carga_uid
+        ");
+        $stmtEstado->execute([':carga_uid' => $cargaUid]);
+    }
+
     $pdo->commit();
 
-    okResponse([
+    $response = [
         'carga_uid'       => $cargaUid,
         'carga_id'        => $cargaId,
         'total_productos' => $totalProductos,
         'total_unidades'  => $totalUnidades,
-    ], 'TAG recibido correctamente');
+    ];
+    if ($resultadosSgo !== null) {
+        $response['resultados_sgo'] = $resultadosSgo;
+    }
+
+    okResponse($response, $iteracion === 1 ? 'TAG procesado correctamente' : 'TAG recibido correctamente');
 
 } catch (PDOException $e) {
     if ($pdo->inTransaction()) {

@@ -62,7 +62,21 @@ cp config/acceso_sodimac_db.example.php config/acceso_sodimac_db.php
 - Los archivos `tools/` y `mockups` quedan versionados.
 - `config/database.php`, `config/acceso_sodimac_db.php` e `index.php` (SOAP) **no van al repo**.
 - El servidor SOAP (`index.php` raiz) se mantiene local pero no se versiona.
-- La integracion con `PRC_SOD_PDA_CAPTURA_REGISTRAR_V1` aun no esta conectada.
+- tag-finalizado.php integra PRC_SOD_PDA_CAPTURA_REGISTRAR_V1 para iteracion = 1, llamando el SP una vez por detalle.
+
+## Estados tag-finalizado
+
+`tag-finalizado.php` guarda toda carga recibida en `sod_pda_tag_carga` y su detalle en `sod_pda_tag_carga_detalle`.
+
+| Estado | Uso |
+|--------|-----|
+| `RECIBIDO` | Payload guardado localmente. Para `iteracion > 1` queda en este estado porque reconteo SGO no esta integrado aun. |
+| `PROCESADO` | Payload de `iteracion = 1` guardado y enviado correctamente a `PRC_SOD_PDA_CAPTURA_REGISTRAR_V1` por cada detalle. |
+| `ERROR` | Estado reservado para fallas persistidas. En la implementacion actual, las fallas criticas hacen rollback y responden `ERROR`, por lo que no siempre queda una fila con este estado. |
+
+Para `iteracion = 1`, el endpoint valida `numero_agenda`, TAG numerico, `detalle_uid`, codigo usable y `fecha_hora` antes de llamar el SP.
+El campo `detalle_uid` se usa como `p_id_origen_externo`.
+El campo `zona_nombre` se usa como `p_codigo_ubicacion`.
 
 ## Validacion PHP
 
