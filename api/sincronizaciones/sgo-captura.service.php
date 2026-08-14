@@ -66,7 +66,7 @@ function registrarCapturaInicialSgo(array $input, array $detalles): array
         $codigoUsable = trim($detalle['codigo_lectura'] ?? $detalle['codigo_barras'] ?? $detalle['sku'] ?? '');
         $detalleUid   = trim($detalle['detalle_uid'] ?? '');
 
-        $stmt->execute([
+        $ok = $stmt->execute([
             ':p_tipo_captura'       => 'INICIAL',
             ':p_numero_agenda'      => $numeroAgenda,
             ':p_id_reconteo'        => null,
@@ -82,15 +82,39 @@ function registrarCapturaInicialSgo(array $input, array $detalles): array
             ':p_observacion'        => $observacion,
         ]);
 
+        if ($ok === false) {
+            $errorInfo = $stmt->errorInfo();
+            throw new Exception(
+                "SP fallo para detalle $detalleUid: " . ($errorInfo[2] ?? 'execute() retorno false')
+            );
+        }
+
         $fila = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($fila) {
+            $resultado = trim($fila['resultado'] ?? '');
+            $idConteoDet = $fila['id_conteo_det'] ?? null;
+            $idTag = $fila['id_tag'] ?? null;
+
+            // Si el SP devolvió un mensaje de error en lugar de INSERTADO/DUPLICADO_IGNORADO
+            if (strtoupper($resultado) !== 'INSERTADO' && strtoupper($resultado) !== 'DUPLICADO_IGNORADO') {
+                throw new Exception(
+                    "SP rechazo detalle $detalleUid: " . ($fila['mensaje'] ?? $resultado)
+                );
+            }
+
+            if (empty($idConteoDet) || empty($idTag)) {
+                throw new Exception(
+                    "SP respondio sin id_conteo_det o id_tag para $detalleUid"
+                );
+            }
+
             $resultados[] = [
                 'detalle_uid'        => $detalleUid,
-                'resultado'          => $fila['resultado'] ?? null,
-                'id_conteo_det'      => $fila['id_conteo_det'] ?? null,
+                'resultado'          => $resultado,
+                'id_conteo_det'      => $idConteoDet,
                 'id_conteo'          => $fila['id_conteo'] ?? null,
-                'id_tag'             => $fila['id_tag'] ?? null,
+                'id_tag'             => $idTag,
                 'id_producto'        => $fila['id_producto'] ?? null,
                 'id_origen_externo'  => $fila['id_origen_externo'] ?? null,
                 'sku'                => $fila['sku'] ?? null,
@@ -98,11 +122,9 @@ function registrarCapturaInicialSgo(array $input, array $detalles): array
                 'mensaje'            => $fila['mensaje'] ?? null,
             ];
         } else {
-            $resultados[] = [
-                'detalle_uid' => $detalleUid,
-                'resultado'   => 'SIN_RESPUESTA',
-                'sku'         => $codigoUsable,
-            ];
+            throw new Exception(
+                "SP no devolvio respuesta para detalle $detalleUid"
+            );
         }
 
         $stmt->closeCursor();

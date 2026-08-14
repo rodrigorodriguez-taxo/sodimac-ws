@@ -82,9 +82,9 @@ function prepararSincronizacionMock(PDO $pdo, string $correo, string $rut): arra
         'zonas_tienda' => [
             ['ALTILLO',          'Altillo',                                  1000, 2999],
             ['PUNTO_VENTA',      'Punto de venta',                           3000, 4999],
-            ['BODEGA_TRASTIENDA', 'Zonas de remate / bodegas / trastienda',  5000, 5999],
-            ['EXHIBICIONES',     'Exhibiciones',                             6000, 6999],
-            ['PTO_VTA_OTROS',    'Pto. vta. otros',                          7000, 9999],
+            ['BODEGA',           'Zonas de remate / bodegas / trastienda',  5000, 5999],
+            ['EXHIBICION',       'Exhibiciones',                             6000, 6999],
+            ['OTRO',             'Pto. vta. otros',                          7000, 9999],
         ],
     ];
 }

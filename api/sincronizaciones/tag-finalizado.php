@@ -33,6 +33,22 @@ $iteracion        = isset($input['iteracion']) ? (int)$input['iteracion'] : 0;
 $tagCodigo        = trim($input['tag_codigo'] ?? '');
 $zonaNombre       = trim($input['zona_nombre'] ?? '');
 $zonaDescripcion  = trim($input['zona_descripcion'] ?? '');
+
+// ──────────── Normalizar zona_nombre ────────────
+// Mapeo de aliases antiguos de la APK a códigos oficiales de sod_cfg_tipo_ubicacion.
+$zonaAliases = [
+    'BODEGA_TRASTIENDA' => 'BODEGA',
+    'EXHIBICIONES'      => 'EXHIBICION',
+    'PTO_VTA_OTROS'     => 'OTRO',
+];
+$zonaOficiales = ['PUNTO_VENTA', 'ALTILLO', 'SALA_VENTAS', 'BODEGA', 'RECEPCION', 'TRASTIENDA', 'EXHIBICION', 'GANCHERA', 'OTRO'];
+
+$zonaUpper = strtoupper($zonaNombre);
+if (isset($zonaAliases[$zonaUpper])) {
+    $zonaNombre = $zonaAliases[$zonaUpper];
+} else {
+    $zonaNombre = $zonaUpper;
+}
 $operadorRut      = trim($input['operador_rut'] ?? '');
 $operadorLogin    = trim($input['operador_login'] ?? '');
 $pdaCodigo        = trim($input['pda_codigo'] ?? '');
@@ -60,6 +76,9 @@ if ($tagCodigo === '') {
 }
 if ($zonaNombre === '') {
     errorResponse('Falta zona_nombre');
+}
+if (!in_array($zonaNombre, $zonaOficiales, true)) {
+    errorResponse('Tipo de ubicacion no valido para SGO: ' . ($input['zona_nombre'] ?? ''));
 }
 if ($operadorRut === '') {
     errorResponse('Falta operador_rut');
@@ -246,15 +265,50 @@ try {
     if ($iteracion === 1) {
         $resultadosSgo = registrarCapturaInicialSgo($input, $detalles);
 
-        // Marcar como PROCESADO si todo OK
-        $stmtEstado = $pdo->prepare("
-            UPDATE sod_pda_tag_carga
-            SET estado = 'PROCESADO',
-                mensaje_error = NULL,
-                fecha_procesado = NOW()
-            WHERE carga_uid = :carga_uid
-        ");
-        $stmtEstado->execute([':carga_uid' => $cargaUid]);
+        // Verificar que todos los resultados del SP hayan sido exitosos
+        $todosOk = true;
+        foreach ($resultadosSgo as $r) {
+            $resultado = strtoupper(trim($r['resultado'] ?? ''));
+            if (!in_array($resultado, ['INSERTADO', 'DUPLICADO_IGNORADO'], true) || empty($r['id_conteo_det']) || empty($r['id_tag'])) {
+                $todosOk = false;
+                break;
+            }
+        }
+
+        if ($todosOk) {
+            $stmtEstado = $pdo->prepare("
+                UPDATE sod_pda_tag_carga
+                SET estado = 'PROCESADO',
+                    mensaje_error = NULL,
+                    fecha_procesado = NOW()
+                WHERE carga_uid = :carga_uid
+            ");
+            $stmtEstado->execute([':carga_uid' => $cargaUid]);
+        } else {
+            // Recopilar mensajes de error de los detalles fallidos
+            $errores = [];
+            foreach ($resultadosSgo as $r) {
+                $resultado = strtoupper(trim($r['resultado'] ?? ''));
+                if (!in_array($resultado, ['INSERTADO', 'DUPLICADO_IGNORADO'], true) || empty($r['id_conteo_det']) || empty($r['id_tag'])) {
+                    $errores[] = ($r['detalle_uid'] ?? '?') . ': ' . ($r['mensaje'] ?? $r['resultado'] ?? 'ERROR');
+                }
+            }
+            $errorMsg = 'SP rechazó detalles: ' . implode('; ', $errores);
+
+            $stmtEstado = $pdo->prepare("
+                UPDATE sod_pda_tag_carga
+                SET estado = 'ERROR',
+                    mensaje_error = :msg,
+                    fecha_procesado = NOW()
+                WHERE carga_uid = :carga_uid
+            ");
+            $stmtEstado->execute([':msg' => $errorMsg, ':carga_uid' => $cargaUid]);
+
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            errorResponse('SP rechazo uno o mas detalles: ' . $errorMsg, 422);
+        }
     }
 
     $pdo->commit();
