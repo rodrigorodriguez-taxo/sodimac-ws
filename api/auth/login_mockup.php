@@ -41,19 +41,25 @@ $usuarios = [
         'correo'          => 'rodrigo.rodriguez@sodimac.cl',
         'rut'             => '17534077-7',
         'rut_normalizado' => '175340777',
-        'rol'             => 'operador',
+        'rol'             => 'OPERADOR',
     ],
     '111111111' => [
         'correo'          => 'operador@taxo.cl',
         'rut'             => '11111111-1',
         'rut_normalizado' => '111111111',
-        'rol'             => 'operador',
+        'rol'             => 'OPERADOR',
     ],
     '998000025' => [
         'correo'          => 'seigi.gim@taxo.cl',
         'rut'             => '99800002-5',
         'rut_normalizado' => '998000025',
-        'rol'             => 'operador',
+        'rol'             => 'OPERADOR',
+    ],
+    '222222222' => [
+        'correo'          => 'analista@taxo.cl',
+        'rut'             => '22222222-2',
+        'rut_normalizado' => '222222222',
+        'rol'             => 'ANALISTA_CLIENTE',
     ],
 ];
 
