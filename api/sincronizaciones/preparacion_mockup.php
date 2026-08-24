@@ -146,9 +146,12 @@ function prepararSincronizacionAnalista(array $base, string $correo): array {
     $nombreTienda  = $base['tiendas']['nombre_tienda'];
     $codigoMuestra = 'M-' . date('Ymd') . '-' . $codigoTienda;
     $numeroAgenda  = 'AG-' . date('Ymd') . '-' . $codigoTienda . '-01';
+    $idMuestra     = 900002;
+    $idAgenda      = 910002;
 
     $base['muestras'] = [
-        'id_muestra'            => 900002,
+        'id_muestra'            => $idMuestra,
+        'id_agenda'             => $idAgenda,
         'codigo_muestra'        => $codigoMuestra,
         'nombre_muestra'        => 'Revisión Inventario Nacional',
         'numero_agenda'         => $numeroAgenda,
@@ -230,10 +233,11 @@ function prepararSincronizacionAnalista(array $base, string $correo): array {
         'contexto' => [
             'codigo_tienda'  => $codigoTienda,
             'nombre_tienda'  => $nombreTienda,
-            'codigo_muestra' => $codigoMuestra,
-            'nombre_muestra' => 'Revisión Inventario Nacional',
-            'fecha_jornada'  => date('Y-m-d'),
-            'numero_agenda'  => $numeroAgenda,
+            'id_agenda'       => $idAgenda,
+            'numero_agenda'   => $numeroAgenda,
+            'codigo_muestra'  => $codigoMuestra,
+            'nombre_muestra'  => 'Revisión Inventario Nacional',
+            'fecha_jornada'   => date('Y-m-d'),
         ],
         'kpis' => [
             'diferencias_pendientes'  => $pendientes,
@@ -257,48 +261,48 @@ function prepararSincronizacionAnalista(array $base, string $correo): array {
 function mockProductos(): array {
     return [
         [
-            'sku'            => 'AF000037001',
-            'codigo_barras'  => '78000037001',
-            'descripcion'    => 'Producto mockup 1',
-            'stock_sistema'  => 10,
+            'sku'           => 'AF000037001',
+            'descripcion'   => 'Producto mockup 1',
+            'stock_sistema' => 10,
             'codigos' => [
-                ['codigo_lectura' => 'AF000037001', 'tipo_codigo' => 'SKU', 'codigo_barras' => '78000037001'],
+                ['codigo_lectura' => 'AF000037001', 'tipo_codigo' => 'SKU'],
+                ['codigo_lectura' => '78000037001', 'tipo_codigo' => 'BARRA'],
             ],
         ],
         [
-            'sku'            => 'AF000037002',
-            'codigo_barras'  => '78000037002',
-            'descripcion'    => 'Producto mockup 2',
-            'stock_sistema'  => 15,
+            'sku'           => 'AF000037002',
+            'descripcion'   => 'Producto mockup 2',
+            'stock_sistema' => 15,
             'codigos' => [
-                ['codigo_lectura' => 'AF000037002', 'tipo_codigo' => 'SKU', 'codigo_barras' => '78000037002'],
+                ['codigo_lectura' => 'AF000037002', 'tipo_codigo' => 'SKU'],
+                ['codigo_lectura' => '78000037002', 'tipo_codigo' => 'BARRA'],
             ],
         ],
         [
-            'sku'            => 'AF000037003',
-            'codigo_barras'  => '78000037003',
-            'descripcion'    => 'Producto mockup 3',
-            'stock_sistema'  => 20,
+            'sku'           => 'AF000037003',
+            'descripcion'   => 'Producto mockup 3',
+            'stock_sistema' => 20,
             'codigos' => [
-                ['codigo_lectura' => 'AF000037003', 'tipo_codigo' => 'SKU', 'codigo_barras' => '78000037003'],
+                ['codigo_lectura' => 'AF000037003', 'tipo_codigo' => 'SKU'],
+                ['codigo_lectura' => '78000037003', 'tipo_codigo' => 'BARRA'],
             ],
         ],
         [
-            'sku'            => 'AF000037004',
-            'codigo_barras'  => '78000037004',
-            'descripcion'    => 'Producto mockup 4',
-            'stock_sistema'  => 5,
+            'sku'           => 'AF000037004',
+            'descripcion'   => 'Producto mockup 4',
+            'stock_sistema' => 5,
             'codigos' => [
-                ['codigo_lectura' => 'AF000037004', 'tipo_codigo' => 'SKU', 'codigo_barras' => '78000037004'],
+                ['codigo_lectura' => 'AF000037004', 'tipo_codigo' => 'SKU'],
+                ['codigo_lectura' => '78000037004', 'tipo_codigo' => 'BARRA'],
             ],
         ],
         [
-            'sku'            => 'AF000037005',
-            'codigo_barras'  => '78000037005',
-            'descripcion'    => 'Producto mockup 5',
-            'stock_sistema'  => 8,
+            'sku'           => 'AF000037005',
+            'descripcion'   => 'Producto mockup 5',
+            'stock_sistema' => 8,
             'codigos' => [
-                ['codigo_lectura' => 'AF000037005', 'tipo_codigo' => 'SKU', 'codigo_barras' => '78000037005'],
+                ['codigo_lectura' => 'AF000037005', 'tipo_codigo' => 'SKU'],
+                ['codigo_lectura' => '78000037005', 'tipo_codigo' => 'BARRA'],
             ],
         ],
     ];

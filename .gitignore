@@ -15,6 +15,9 @@
 *.swo
 *~
 
+# Respaldos
+/api/sincronizaciones/respaldo_13_08/
+
 # Entorno
 .env
 .env.*
