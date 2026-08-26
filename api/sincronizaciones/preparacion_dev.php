@@ -133,7 +133,11 @@ function prepararSincronizacionAnalistaDev(PDO $pdo, array $usuario, array $tien
     /* --- 7. punto de venta lectura ------------------------------------------- */
     $puntoVenta = obtenerPuntoVentaAnalistaDev($pdo, $idAgenda, $conteos['id_conteo_1'], $conteos['id_conteo_2']);
 
-    /* --- 8. contexto analista ------------------------------------------------ */
+    /* --- 8. pre variance lectura --------------------------------------------- */
+    $idKardex = $agendaSeleccionada['id_kardex'] !== null ? (int) $agendaSeleccionada['id_kardex'] : null;
+    $preVariance = obtenerPreVarianceAnalistaDev($pdo, $idAgenda, $idKardex, $conteos['id_conteo_1'], $conteos['id_conteo_2']);
+
+    /* --- 9. contexto analista ------------------------------------------------ */
     $tiendaPrincipal = current($tiendas);
 
     return [
@@ -153,6 +157,7 @@ function prepararSincronizacionAnalistaDev(PDO $pdo, array $usuario, array $tien
                 'codigo_muestra' => $agendaSeleccionada['codigo_muestra'] ?? '',
                 'nombre_muestra' => $agendaSeleccionada['nombre_muestra'] ?? '',
                 'fecha_jornada'  => $agendaSeleccionada['fecha_agenda'] ?? date('Y-m-d'),
+                'id_kardex'      => $idKardex,
             ],
             'kpis' => [
                 'diferencias_pendientes'   => 0,
@@ -168,8 +173,9 @@ function prepararSincronizacionAnalistaDev(PDO $pdo, array $usuario, array $tien
             'conteos' => $conteos,
 
             'validacion_operacional' => [
-                'altillos'     => $altillos,
-                'punto_venta'  => $puntoVenta,
+                'altillos'      => $altillos,
+                'punto_venta'   => $puntoVenta,
+                'pre_variance'  => $preVariance,
             ],
         ],
     ];
@@ -540,6 +546,313 @@ function construirValidacionZonaAnalistaDev(array $dataset, array $avance, strin
     $resultado['tags'] = array_values($tagsMap);
 
     return $resultado;
+}
+
+/* ============================================================================
+   Pre Variance — punto de entrada
+   ============================================================================ */
+
+function obtenerPreVarianceAnalistaDev(PDO $pdo, int $idAgenda, ?int $idKardex, ?int $idConteo1, ?int $idConteo2): array
+{
+    if ($idKardex === null || $idConteo1 === null) {
+        return obtenerPreVarianceVacioAnalistaDev();
+    }
+
+    $c1 = $idConteo1;
+    $c2 = $idConteo2 ?? 0;
+
+    $listado = obtenerListadoPreVarianceDev($pdo, $idAgenda, $idKardex, $c1, $c2);
+
+    // Obtener ubicaciones de todos los SKUs en una sola query
+    $todosLosSkuIds = array_column($listado, 'id_producto');
+    $todasLasUbicaciones = [];
+    if (!empty($todosLosSkuIds)) {
+        $todasLasUbicaciones = obtenerUbicacionesMultiplesPreVarianceDev($pdo, $idAgenda, $todosLosSkuIds, $c1, $c2);
+    }
+
+    // Agrupar ubicaciones por SKU
+    $ubicacionesPorSku = [];
+    foreach ($todasLasUbicaciones as $u) {
+        $skuId = $u['id_producto'];
+        if (!isset($ubicacionesPorSku[$skuId])) {
+            $ubicacionesPorSku[$skuId] = [];
+        }
+        $ubicacionesPorSku[$skuId][] = [
+            'id_tag_backend'        => $u['id_tag'],
+            'numero_tag'            => $u['numero_tag'],
+            'zona'                  => $u['zona'],
+            'cantidad_inventariada' => (float) $u['cantidad_inventariada'],
+            'cantidad_pre_variance' => $u['cantidad_pre_variance'] !== null ? (float) $u['cantidad_pre_variance'] : null,
+        ];
+    }
+
+    // Construir productos con sus ubicaciones
+    $productos = [];
+    foreach ($listado as $fila) {
+        $skuId = (int) $fila['id_producto'];
+        $productos[] = [
+            'id_producto_backend'          => $skuId,
+            'sku'                          => $fila['sku'] ?? '',
+            'descripcion'                  => $fila['descripcion_producto'] ?? null,
+            'stock_teorico'                => (float) ($fila['stock_teorico'] ?? 0),
+            'valor_unitario'               => (float) ($fila['valor_unitario'] ?? 0),
+            'inventariado_antes_pre_variance' => (float) ($fila['inventariado_antes_pre_variance'] ?? 0),
+            'fisico_vigente'               => (float) ($fila['fisico_vigente'] ?? 0),
+            'diferencia_unidades'          => (float) ($fila['diferencia_unidades'] ?? 0),
+            'diferencia_en_costo'          => (float) ($fila['diferencia_en_costo'] ?? 0),
+            'estado_pre_variance'          => $fila['estado_pre_variance'] ?? 'PENDIENTE',
+            'ubicaciones'                  => $ubicacionesPorSku[$skuId] ?? [],
+        ];
+    }
+
+    // Resumen
+    $totalSku = count($productos);
+    $skuPendientes = 0;
+    $skuRevisados = 0;
+    $diferenciaTotal = 0.0;
+    $skuConMayorDiferencia = null;
+    $mayorDiferencia = 0.0;
+
+    foreach ($productos as $p) {
+        if ($p['estado_pre_variance'] === 'REVISADO') {
+            $skuRevisados++;
+        } else {
+            $skuPendientes++;
+        }
+        $diferenciaTotal += $p['diferencia_en_costo'];
+        if (abs($p['diferencia_en_costo']) > abs($mayorDiferencia)) {
+            $mayorDiferencia = $p['diferencia_en_costo'];
+            $skuConMayorDiferencia = $p;
+        }
+    }
+
+    return [
+        'resumen' => [
+            'sku_total'               => $totalSku,
+            'sku_pendientes'          => $skuPendientes,
+            'sku_revisados'           => $skuRevisados,
+            'diferencia_total'        => $diferenciaTotal,
+            'mayor_diferencia_valor'  => $mayorDiferencia,
+            'mayor_diferencia_sku'    => $skuConMayorDiferencia ? $skuConMayorDiferencia['sku'] : null,
+            'mayor_diferencia_descripcion' => $skuConMayorDiferencia ? $skuConMayorDiferencia['descripcion'] : null,
+        ],
+        'productos' => $productos,
+    ];
+}
+
+function obtenerPreVarianceVacioAnalistaDev(): array
+{
+    return [
+        'resumen' => [
+            'sku_total'               => 0,
+            'sku_pendientes'          => 0,
+            'sku_revisados'           => 0,
+            'diferencia_total'        => 0,
+            'mayor_diferencia_valor'  => 0,
+            'mayor_diferencia_sku'    => null,
+            'mayor_diferencia_descripcion' => null,
+        ],
+        'productos' => [],
+    ];
+}
+
+/* ============================================================================
+   Q15 — Listado Pre Variance (diferencia valorizada absoluta > 500000)
+   ============================================================================ */
+
+function obtenerListadoPreVarianceDev(PDO $pdo, int $idAgenda, int $idKardex, int $idConteo1, int $idConteo2): array
+{
+    $sql = "SELECT
+        p.id_producto,
+        p.sku,
+        p.descripcion_producto,
+        kd.stock_teorico,
+        kd.valor_unitario,
+        COALESCE(base.fisico_operacional, 0) AS inventariado_antes_pre_variance,
+        COALESCE(pv.cantidad_pre_variance, base.fisico_operacional, 0) AS fisico_vigente,
+        (
+            COALESCE(pv.cantidad_pre_variance, base.fisico_operacional, 0)
+            - COALESCE(kd.stock_teorico, 0)
+        ) AS diferencia_unidades,
+        (
+            (
+                COALESCE(pv.cantidad_pre_variance, base.fisico_operacional, 0)
+                - COALESCE(kd.stock_teorico, 0)
+            )
+            * COALESCE(kd.valor_unitario, 0)
+        ) AS diferencia_en_costo,
+        CASE
+            WHEN pv.id_producto IS NULL THEN 'PENDIENTE'
+            ELSE 'REVISADO'
+        END AS estado_pre_variance
+    FROM sod_inv_agenda_muestra AS am
+    INNER JOIN sod_inv_muestra_det AS md
+            ON md.id_muestra = am.id_muestra
+           AND md.fl_activo = 'S'
+    INNER JOIN sod_cfg_producto AS p
+            ON p.id_producto = md.id_producto
+           AND p.fl_activo = 'S'
+    INNER JOIN sod_inv_kardex_det AS kd
+            ON kd.id_kardex = :id_kardex
+           AND kd.id_producto = p.id_producto
+    LEFT JOIN (
+        SELECT
+            u.id_producto,
+            SUM(COALESCE(op.cantidad_c2, c1.cantidad_c1, 0)) AS fisico_operacional
+        FROM (
+            SELECT id_producto, id_tag
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_1
+              AND estado_registro = 'VIGENTE'
+            UNION
+            SELECT id_producto, id_tag
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_2
+              AND id_reconteo IS NULL
+              AND origen = 'SGO_ANALISTA'
+              AND estado_registro = 'VIGENTE'
+        ) AS u
+        LEFT JOIN (
+            SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_c1
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_1_c1
+              AND estado_registro = 'VIGENTE'
+            GROUP BY id_producto, id_tag
+        ) AS c1 ON c1.id_producto = u.id_producto AND c1.id_tag = u.id_tag
+        LEFT JOIN (
+            SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_c2
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_2_op
+              AND id_reconteo IS NULL
+              AND origen = 'SGO_ANALISTA'
+              AND estado_registro = 'VIGENTE'
+            GROUP BY id_producto, id_tag
+        ) AS op ON op.id_producto = u.id_producto AND op.id_tag = u.id_tag
+        GROUP BY u.id_producto
+    ) AS base ON base.id_producto = p.id_producto
+    LEFT JOIN (
+        SELECT id_producto, SUM(cantidad) AS cantidad_pre_variance
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = :id_conteo_2_pv
+          AND id_reconteo IS NULL
+          AND origen = 'SGO_PREVARIANCE'
+          AND estado_registro = 'VIGENTE'
+        GROUP BY id_producto
+    ) AS pv ON pv.id_producto = p.id_producto
+    WHERE am.id_agenda = :id_agenda
+      AND am.fl_activo = 'S'
+      AND (
+            ABS(
+                (COALESCE(base.fisico_operacional, 0) - COALESCE(kd.stock_teorico, 0))
+                * COALESCE(kd.valor_unitario, 0)
+            ) > 500000
+            OR pv.id_producto IS NOT NULL
+      )
+    ORDER BY
+        ABS(
+            (COALESCE(pv.cantidad_pre_variance, base.fisico_operacional, 0) - COALESCE(kd.stock_teorico, 0))
+            * COALESCE(kd.valor_unitario, 0)
+        ) DESC,
+        p.sku";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([
+        ':id_agenda'      => $idAgenda,
+        ':id_kardex'      => $idKardex,
+        ':id_conteo_1'    => $idConteo1,
+        ':id_conteo_2'    => $idConteo2,
+        ':id_conteo_1_c1' => $idConteo1,
+        ':id_conteo_2_op' => $idConteo2,
+        ':id_conteo_2_pv' => $idConteo2,
+    ]);
+
+    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+/* ============================================================================
+   Q16 — Ubicaciones de múltiples SKUs en Pre Variance
+   ============================================================================ */
+
+function obtenerUbicacionesMultiplesPreVarianceDev(PDO $pdo, int $idAgenda, array $skuIds, int $idConteo1, int $idConteo2): array
+{
+    if (empty($skuIds)) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($skuIds), '?'));
+
+    $sql = "SELECT
+        u.id_producto,
+        t.id_tag,
+        t.numero_tag,
+        COALESCE(rz.nombre_zona_reporte, tu.nombre_tipo_ubicacion, 'Sin zona') AS zona,
+        COALESCE(op.cantidad_c2, c1.cantidad_c1, 0) AS cantidad_inventariada,
+        pv.cantidad_pre_variance
+    FROM (
+        SELECT id_producto, id_tag
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = ?
+          AND id_producto IN ($placeholders)
+          AND estado_registro = 'VIGENTE'
+        UNION
+        SELECT id_producto, id_tag
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = ?
+          AND id_producto IN ($placeholders)
+          AND id_reconteo IS NULL
+          AND origen = 'SGO_ANALISTA'
+          AND estado_registro = 'VIGENTE'
+    ) AS u
+    INNER JOIN sod_inv_tag AS t
+            ON t.id_tag = u.id_tag
+           AND t.id_agenda = ?
+    LEFT JOIN sod_cfg_tipo_ubicacion AS tu
+           ON tu.id_tipo_ubicacion = t.id_tipo_ubicacion
+    LEFT JOIN sod_rep_zona_tag_regla AS rz
+           ON rz.fl_activo = 'S'
+          AND t.numero_tag BETWEEN rz.tag_desde AND rz.tag_hasta
+    LEFT JOIN (
+        SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_c1
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = ?
+          AND estado_registro = 'VIGENTE'
+        GROUP BY id_producto, id_tag
+    ) AS c1 ON c1.id_producto = u.id_producto AND c1.id_tag = u.id_tag
+    LEFT JOIN (
+        SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_c2
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = ?
+          AND id_reconteo IS NULL
+          AND origen = 'SGO_ANALISTA'
+          AND estado_registro = 'VIGENTE'
+        GROUP BY id_producto, id_tag
+    ) AS op ON op.id_producto = u.id_producto AND op.id_tag = u.id_tag
+    LEFT JOIN (
+        SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_pre_variance
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = ?
+          AND id_reconteo IS NULL
+          AND origen = 'SGO_PREVARIANCE'
+          AND estado_registro = 'VIGENTE'
+        GROUP BY id_producto, id_tag
+    ) AS pv ON pv.id_producto = u.id_producto AND pv.id_tag = u.id_tag
+    ORDER BY u.id_producto, t.numero_tag";
+
+    // Build params: C1, SKU1..SKUn, C2, SKU1..SKUn, agenda, C1_ubic, C2_ubic, C2_pv
+    $params = [];
+    $params[] = $idConteo1;                     // id_conteo_1 (UNION 1)
+    foreach ($skuIds as $id) { $params[] = $id; }
+    $params[] = $idConteo2;                     // id_conteo_2 (UNION 2)
+    foreach ($skuIds as $id) { $params[] = $id; }
+    $params[] = $idAgenda;                      // t.id_agenda
+    $params[] = $idConteo1;                     // c1 subquery
+    $params[] = $idConteo2;                     // op subquery
+    $params[] = $idConteo2;                     // pv subquery
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+
+    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 }
 
 /* ============================================================================
