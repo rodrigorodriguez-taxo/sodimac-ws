@@ -70,6 +70,24 @@ function prepararSincronizacion(PDO $pdo, string $correo, string $rut): array
 
     $agendaSeleccionada = current($agendas);
 
+    /* --- 4. separar por perfil ---------------------------------------------- */
+    if (($usuario['tipo_usuario'] ?? '') === 'ANALISTA_CLIENTE') {
+        return prepararSincronizacionAnalistaDev($pdo, $usuario, $tiendas, $agendaSeleccionada);
+    }
+
+    return prepararSincronizacionOperadorDev($pdo, $usuario, $tiendas, $agendaSeleccionada);
+}
+
+/* ============================================================================
+   Flujo OPERADOR — extraído de prepararSincronizacion()
+   Contrato APK invariado: usuario, tiendas, muestras, eventos, productos,
+   zonas_tienda.
+   ============================================================================ */
+
+function prepararSincronizacionOperadorDev(PDO $pdo, array $usuario, array $tiendas, array $agendaSeleccionada): array
+{
+    $login = $usuario['login'];
+
     /* --- 4. productos/codigos de la agenda ---------------------------------- */
     $filasCodigos = obtenerCodigosAgenda($pdo, (int) $agendaSeleccionada['id_agenda'], $login);
     if (!$filasCodigos) {
@@ -90,14 +108,438 @@ function prepararSincronizacion(PDO $pdo, string $correo, string $rut): array
         'muestras'      => $muestras,
         'eventos'       => $eventos,
         'productos'     => $productos,
-        'zonas_tienda'  => array(
-            0 => array('ALTILLO',          'Altillo',                                    1000, 2999),
-            1 => array('PUNTO_VENTA',      'Punto de venta',                             3000, 4999),
-            2 => array('BODEGA',           'Zonas de remate / bodegas / trastienda',     5000, 5999),
-            3 => array('EXHIBICION',       'Exhibiciones',                               6000, 6999),
-            4 => array('OTRO',             'Pto. vta. otros',                            7000, 9999),
-        ),
+        'zonas_tienda'  => obtenerZonasTiendaDefault(),
     ];
+}
+
+/* ============================================================================
+   Flujo ANALISTA_CLIENTE — contrato liviano A0.5
+   No descarga muestras ni productos completos. Devuelve solo contexto,
+   conteos y validación operacional (Altillos/PDV/etc).
+   ============================================================================ */
+
+function prepararSincronizacionAnalistaDev(PDO $pdo, array $usuario, array $tiendas, array $agendaSeleccionada): array
+{
+    /* --- 4. construir evento desde agenda ------------------------------------ */
+    $eventos = construirEventoDesdeAgenda($agendaSeleccionada, current($tiendas));
+
+    /* --- 5. resolver conteos ------------------------------------------------- */
+    $idAgenda = (int) $agendaSeleccionada['id_agenda'];
+    $conteos  = obtenerConteosAnalistaDev($pdo, $idAgenda);
+
+    /* --- 6. altillos lectura ------------------------------------------------- */
+    $altillos = obtenerAltillosAnalistaDev($pdo, $idAgenda, $conteos['id_conteo_1'], $conteos['id_conteo_2']);
+
+    /* --- 7. punto de venta lectura ------------------------------------------- */
+    $puntoVenta = obtenerPuntoVentaAnalistaDev($pdo, $idAgenda, $conteos['id_conteo_1'], $conteos['id_conteo_2']);
+
+    /* --- 8. contexto analista ------------------------------------------------ */
+    $tiendaPrincipal = current($tiendas);
+
+    return [
+        'usuario'       => $usuario,
+        'tiendas'       => $tiendas,
+        'muestras'      => null,
+        'eventos'       => $eventos,
+        'productos'     => [],
+        'zonas_tienda'  => obtenerZonasTiendaDefault(),
+
+        'analista' => [
+            'contexto' => [
+                'codigo_tienda'  => $agendaSeleccionada['codigo_tienda'] ?? $tiendaPrincipal['codigo_tienda'] ?? '',
+                'nombre_tienda'  => $agendaSeleccionada['nombre_tienda'] ?? $tiendaPrincipal['nombre_tienda'] ?? '',
+                'id_agenda'      => $idAgenda,
+                'numero_agenda'  => $agendaSeleccionada['numero_agenda'] ?? '',
+                'codigo_muestra' => $agendaSeleccionada['codigo_muestra'] ?? '',
+                'nombre_muestra' => $agendaSeleccionada['nombre_muestra'] ?? '',
+                'fecha_jornada'  => $agendaSeleccionada['fecha_agenda'] ?? date('Y-m-d'),
+            ],
+            'kpis' => [
+                'diferencias_pendientes'   => 0,
+                'valor_diferencias'        => 0,
+                'diferencias_criticas'     => 0,
+                'reconteos_realizados'     => 0,
+                'diferencias_resueltas'    => 0,
+                'persisten_con_diferencia' => 0,
+                'total_productos'          => 0,
+            ],
+            'filas' => [],
+
+            'conteos' => $conteos,
+
+            'validacion_operacional' => [
+                'altillos'     => $altillos,
+                'punto_venta'  => $puntoVenta,
+            ],
+        ],
+    ];
+}
+
+/* ============================================================================
+   Helper: zonas TAG default (mismo array que siempre devuelve la preparación)
+   ============================================================================ */
+
+function obtenerZonasTiendaDefault(): array
+{
+    return array(
+        0 => array('ALTILLO',      'Altillo',                            1000, 2999),
+        1 => array('PUNTO_VENTA',  'Punto de venta',                     3000, 4999),
+        2 => array('BODEGA',       'Zonas de remate / bodegas / trastienda', 5000, 5999),
+        3 => array('EXHIBICION',   'Exhibiciones',                       6000, 6999),
+        4 => array('OTRO',         'Pto. vta. otros',                    7000, 9999),
+    );
+}
+
+/* ============================================================================
+   Q03 — Resolver Conteo 1, Conteo 2 y Conteo 3
+   ============================================================================ */
+
+function obtenerConteosAnalistaDev(PDO $pdo, int $idAgenda): array
+{
+    $sql = "SELECT
+        MAX(
+            CASE
+                WHEN numero_iteracion = 1
+                 AND tipo_conteo = 'INICIAL'
+                THEN id_conteo
+            END
+        ) AS id_conteo_1,
+        MAX(
+            CASE
+                WHEN numero_iteracion = 2
+                 AND tipo_conteo = 'VALIDACION'
+                THEN id_conteo
+            END
+        ) AS id_conteo_2,
+        MAX(
+            CASE
+                WHEN numero_iteracion = 3
+                 AND tipo_conteo = 'RECONTEO'
+                THEN id_conteo
+            END
+        ) AS id_conteo_3
+    FROM sod_inv_conteo
+    WHERE id_agenda = :id_agenda
+      AND fl_activo = 'S'
+      AND estado_conteo <> 'ANULADO'";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([':id_agenda' => $idAgenda]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    return [
+        'id_conteo_1' => $row['id_conteo_1'] !== null ? (int) $row['id_conteo_1'] : null,
+        'id_conteo_2' => $row['id_conteo_2'] !== null ? (int) $row['id_conteo_2'] : null,
+        'id_conteo_3' => $row['id_conteo_3'] !== null ? (int) $row['id_conteo_3'] : null,
+    ];
+}
+
+/* ============================================================================
+   Validación por zona — punto de entrada genérico
+   ============================================================================ */
+
+function obtenerAltillosAnalistaDev(PDO $pdo, int $idAgenda, ?int $idConteo1, ?int $idConteo2): array
+{
+    return obtenerValidacionZonaAnalistaDev($pdo, $idAgenda, $idConteo1, $idConteo2, 'ALTILLO', 'Altillo', 100);
+}
+
+function obtenerPuntoVentaAnalistaDev(PDO $pdo, int $idAgenda, ?int $idConteo1, ?int $idConteo2): array
+{
+    return obtenerValidacionZonaAnalistaDev($pdo, $idAgenda, $idConteo1, $idConteo2, 'PUNTO_VENTA', 'Punto de venta', 30);
+}
+
+function obtenerValidacionZonaAnalistaDev(PDO $pdo, int $idAgenda, ?int $idConteo1, ?int $idConteo2, string $codigoZona, string $nombreZona, int $objetivoPorcentaje): array
+{
+    if ($idConteo1 === null) {
+        return obtenerValidacionZonaVacioAnalistaDev($codigoZona, $nombreZona, $objetivoPorcentaje);
+    }
+
+    $c1 = $idConteo1;
+    $c2 = $idConteo2 ?? 0;
+
+    $dataset = obtenerDatasetValidacionZonaAnalistaDev($pdo, $idAgenda, $c1, $c2, $codigoZona);
+    $avance  = obtenerAvanceValidacionZonaAnalistaDev($pdo, $idAgenda, $c1, $c2, $codigoZona);
+
+    return construirValidacionZonaAnalistaDev($dataset, $avance, $codigoZona, $nombreZona, $objetivoPorcentaje);
+}
+
+function obtenerValidacionZonaVacioAnalistaDev(string $codigoZona, string $nombreZona, int $objetivoPorcentaje): array
+{
+    return [
+        'resumen' => [
+            'codigo_zona'         => $codigoZona,
+            'nombre_zona'         => $nombreZona,
+            'objetivo_porcentaje' => $objetivoPorcentaje,
+            'tags_usados'         => 0,
+            'tags_confirmados'    => 0,
+            'tags_pendientes'     => 0,
+            'porcentaje'          => 0,
+            'cumple'              => false,
+        ],
+        'tags'      => [],
+        'productos' => [],
+    ];
+}
+
+/* ============================================================================
+   Q11 — Dataset operacional por zona (filtro parametrizable)
+   ============================================================================ */
+
+function obtenerDatasetValidacionZonaAnalistaDev(PDO $pdo, int $idAgenda, int $idConteo1, int $idConteo2, string $codigoZona): array
+{
+    $sql = "SELECT
+        t.id_tag,
+        t.numero_tag,
+        t.id_tipo_ubicacion,
+        COALESCE(rz.codigo_zona_reporte, tu.codigo_tipo_ubicacion, '') AS codigo_zona,
+        COALESCE(rz.nombre_zona_reporte, tu.nombre_tipo_ubicacion, 'Sin zona') AS nombre_zona,
+        p.id_producto,
+        p.sku,
+        p.descripcion_producto,
+        COALESCE(op.cantidad_c2, c1.cantidad_c1, 0) AS cantidad_inventariada,
+        CASE
+            WHEN op.cantidad_c2 IS NULL THEN 'PENDIENTE'
+            ELSE 'CONFIRMADO'
+        END AS estado_validacion,
+        CASE
+            WHEN c1.id_producto IS NULL THEN 'S'
+            ELSE 'N'
+        END AS fl_incorporado
+    FROM (
+        SELECT id_tag, id_producto
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = :id_conteo_1
+          AND estado_registro = 'VIGENTE'
+        UNION
+        SELECT id_tag, id_producto
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = :id_conteo_2
+          AND id_reconteo IS NULL
+          AND origen = 'SGO_ANALISTA'
+          AND estado_registro = 'VIGENTE'
+    ) AS u
+    INNER JOIN sod_inv_tag AS t
+            ON t.id_tag = u.id_tag
+           AND t.id_agenda = :id_agenda_tag
+    INNER JOIN sod_cfg_producto AS p
+            ON p.id_producto = u.id_producto
+           AND p.fl_activo = 'S'
+    INNER JOIN sod_inv_agenda_muestra AS am
+            ON am.id_agenda = :id_agenda_muestra
+           AND am.fl_activo = 'S'
+    INNER JOIN sod_inv_muestra_det AS md
+            ON md.id_muestra = am.id_muestra
+           AND md.id_producto = p.id_producto
+           AND md.fl_activo = 'S'
+    LEFT JOIN sod_cfg_tipo_ubicacion AS tu
+           ON tu.id_tipo_ubicacion = t.id_tipo_ubicacion
+    LEFT JOIN sod_rep_zona_tag_regla AS rz
+           ON rz.fl_activo = 'S'
+          AND t.numero_tag BETWEEN rz.tag_desde AND rz.tag_hasta
+    LEFT JOIN (
+        SELECT id_tag, id_producto, SUM(cantidad) AS cantidad_c1
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = :id_conteo_1_c1
+          AND estado_registro = 'VIGENTE'
+        GROUP BY id_tag, id_producto
+    ) AS c1
+           ON c1.id_tag = u.id_tag
+          AND c1.id_producto = u.id_producto
+    LEFT JOIN (
+        SELECT id_tag, id_producto, SUM(cantidad) AS cantidad_c2
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = :id_conteo_2_op
+          AND id_reconteo IS NULL
+          AND origen = 'SGO_ANALISTA'
+          AND estado_registro = 'VIGENTE'
+        GROUP BY id_tag, id_producto
+    ) AS op
+           ON op.id_tag = u.id_tag
+          AND op.id_producto = u.id_producto
+    WHERE (
+        UPPER(COALESCE(rz.codigo_zona_reporte, tu.codigo_tipo_ubicacion, '')) LIKE :zona_filtro_1
+        OR UPPER(COALESCE(rz.nombre_zona_reporte, tu.nombre_tipo_ubicacion, 'Sin zona')) LIKE :zona_filtro_2
+    )
+    ORDER BY COALESCE(rz.orden_visual, tu.orden_visual, 999), t.numero_tag, p.sku";
+
+    $zonaFiltro = '%' . strtoupper($codigoZona) . '%';
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([
+        ':id_conteo_1'       => $idConteo1,
+        ':id_conteo_2'       => $idConteo2,
+        ':id_agenda_tag'     => $idAgenda,
+        ':id_agenda_muestra' => $idAgenda,
+        ':id_conteo_1_c1'    => $idConteo1,
+        ':id_conteo_2_op'    => $idConteo2,
+        ':zona_filtro_1'     => $zonaFiltro,
+        ':zona_filtro_2'     => $zonaFiltro,
+    ]);
+
+    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+/* ============================================================================
+   Q12 — Avance por zona (filtro parametrizable)
+   ============================================================================ */
+
+function obtenerAvanceValidacionZonaAnalistaDev(PDO $pdo, int $idAgenda, int $idConteo1, int $idConteo2, string $codigoZona): array
+{
+    $sql = "SELECT
+        x.codigo_zona,
+        x.nombre_zona,
+        COUNT(*) AS tags_usados,
+        SUM(x.tag_confirmado) AS tags_confirmados,
+        COUNT(*) - SUM(x.tag_confirmado) AS tags_pendientes,
+        ROUND(SUM(x.tag_confirmado) * 100 / NULLIF(COUNT(*), 0), 0) AS porcentaje
+    FROM (
+        SELECT
+            t.id_tag,
+            COALESCE(rz.codigo_zona_reporte, tu.codigo_tipo_ubicacion, '') AS codigo_zona,
+            COALESCE(rz.nombre_zona_reporte, tu.nombre_tipo_ubicacion, 'Sin zona') AS nombre_zona,
+            CASE
+                WHEN SUM(CASE WHEN op.id_producto IS NULL THEN 0 ELSE 1 END) = COUNT(*)
+                THEN 1
+                ELSE 0
+            END AS tag_confirmado
+        FROM (
+            SELECT DISTINCT id_tag, id_producto
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_1
+              AND estado_registro = 'VIGENTE'
+        ) AS u
+        INNER JOIN sod_inv_tag AS t
+                ON t.id_tag = u.id_tag
+               AND t.id_agenda = :id_agenda
+        LEFT JOIN sod_cfg_tipo_ubicacion AS tu
+               ON tu.id_tipo_ubicacion = t.id_tipo_ubicacion
+        LEFT JOIN sod_rep_zona_tag_regla AS rz
+               ON rz.fl_activo = 'S'
+              AND t.numero_tag BETWEEN rz.tag_desde AND rz.tag_hasta
+        LEFT JOIN (
+            SELECT DISTINCT id_tag, id_producto
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_2
+              AND id_reconteo IS NULL
+              AND origen = 'SGO_ANALISTA'
+              AND estado_registro = 'VIGENTE'
+        ) AS op
+               ON op.id_tag = u.id_tag
+              AND op.id_producto = u.id_producto
+        WHERE (
+            UPPER(COALESCE(rz.codigo_zona_reporte, tu.codigo_tipo_ubicacion, '')) LIKE :zona_filtro_1
+            OR UPPER(COALESCE(rz.nombre_zona_reporte, tu.nombre_tipo_ubicacion, 'Sin zona')) LIKE :zona_filtro_2
+        )
+        GROUP BY
+            t.id_tag,
+            COALESCE(rz.codigo_zona_reporte, tu.codigo_tipo_ubicacion, ''),
+            COALESCE(rz.nombre_zona_reporte, tu.nombre_tipo_ubicacion, 'Sin zona')
+    ) AS x
+    GROUP BY x.codigo_zona, x.nombre_zona
+    ORDER BY x.codigo_zona";
+
+    $zonaFiltro = '%' . strtoupper($codigoZona) . '%';
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([
+        ':id_conteo_1'  => $idConteo1,
+        ':id_conteo_2'  => $idConteo2,
+        ':id_agenda'    => $idAgenda,
+        ':zona_filtro_1' => $zonaFiltro,
+        ':zona_filtro_2' => $zonaFiltro,
+    ]);
+
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$row) {
+        return [];
+    }
+
+    return [
+        'codigo_zona'      => $row['codigo_zona'],
+        'nombre_zona'      => $row['nombre_zona'],
+        'tags_usados'      => (int) $row['tags_usados'],
+        'tags_confirmados' => (int) $row['tags_confirmados'],
+        'tags_pendientes'  => (int) $row['tags_pendientes'],
+        'porcentaje'       => (int) $row['porcentaje'],
+    ];
+}
+
+/* ============================================================================
+   Construir estructura de validación desde dataset + avance
+   ============================================================================ */
+
+function construirValidacionZonaAnalistaDev(array $dataset, array $avance, string $codigoZona, string $nombreZona, int $objetivoPorcentaje): array
+{
+    $resultado = obtenerValidacionZonaVacioAnalistaDev($codigoZona, $nombreZona, $objetivoPorcentaje);
+
+    /* --- resumen desde avance ------------------------------------------------ */
+    if (!empty($avance)) {
+        $resultado['resumen']['tags_usados']      = $avance['tags_usados'];
+        $resultado['resumen']['tags_confirmados']  = $avance['tags_confirmados'];
+        $resultado['resumen']['tags_pendientes']   = $avance['tags_pendientes'];
+        $resultado['resumen']['porcentaje']        = $avance['porcentaje'];
+        $resultado['resumen']['cumple']            = $avance['tags_usados'] > 0
+            && $avance['porcentaje'] >= $objetivoPorcentaje;
+    }
+
+    if (empty($dataset)) {
+        return $resultado;
+    }
+
+    /* --- productos ----------------------------------------------------------- */
+    $productos = [];
+    foreach ($dataset as $fila) {
+        $productos[] = [
+            'id_tag'               => (int) $fila['id_tag'],
+            'numero_tag'           => (int) $fila['numero_tag'],
+            'id_tipo_ubicacion'    => $fila['id_tipo_ubicacion'] ?? null,
+            'codigo_zona'          => $fila['codigo_zona'] ?? '',
+            'nombre_zona'          => $fila['nombre_zona'] ?? '',
+            'id_producto'          => (int) $fila['id_producto'],
+            'sku'                  => $fila['sku'] ?? '',
+            'descripcion_producto' => $fila['descripcion_producto'] ?? '',
+            'cantidad_inventariada' => (float) $fila['cantidad_inventariada'],
+            'estado_validacion'    => $fila['estado_validacion'] ?? 'PENDIENTE',
+            'fl_incorporado'       => $fila['fl_incorporado'] ?? 'N',
+        ];
+    }
+    $resultado['productos'] = $productos;
+
+    /* --- tags agrupados ------------------------------------------------------ */
+    $tagsMap = [];
+    foreach ($productos as $p) {
+        $tagId = $p['id_tag'];
+        if (!isset($tagsMap[$tagId])) {
+            $tagsMap[$tagId] = [
+                'id_tag'               => $p['id_tag'],
+                'numero_tag'           => $p['numero_tag'],
+                'codigo_zona'          => $p['codigo_zona'],
+                'nombre_zona'          => $p['nombre_zona'],
+                'productos_total'      => 0,
+                'productos_confirmados' => 0,
+                'productos_pendientes' => 0,
+                'estado'               => 'PENDIENTE',
+            ];
+        }
+        $tagsMap[$tagId]['productos_total']++;
+        if ($p['estado_validacion'] === 'CONFIRMADO') {
+            $tagsMap[$tagId]['productos_confirmados']++;
+        } else {
+            $tagsMap[$tagId]['productos_pendientes']++;
+        }
+    }
+
+    foreach ($tagsMap as &$tag) {
+        if ($tag['productos_total'] > 0 && $tag['productos_confirmados'] === $tag['productos_total']) {
+            $tag['estado'] = 'CONFIRMADO';
+        }
+    }
+    unset($tag);
+
+    $resultado['tags'] = array_values($tagsMap);
+
+    return $resultado;
 }
 
 /* ============================================================================
