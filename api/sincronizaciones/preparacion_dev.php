@@ -137,7 +137,10 @@ function prepararSincronizacionAnalistaDev(PDO $pdo, array $usuario, array $tien
     $idKardex = $agendaSeleccionada['id_kardex'] !== null ? (int) $agendaSeleccionada['id_kardex'] : null;
     $preVariance = obtenerPreVarianceAnalistaDev($pdo, $idAgenda, $idKardex, $conteos['id_conteo_1'], $conteos['id_conteo_2']);
 
-    /* --- 9. contexto analista ------------------------------------------------ */
+    /* --- 9. recuento lectura ------------------------------------------------- */
+    $recuento = obtenerRecuentoAnalistaDev($pdo, $idAgenda, $idKardex, $conteos['id_conteo_1'], $conteos['id_conteo_2'], $conteos['id_conteo_3']);
+
+    /* --- 10. contexto analista ----------------------------------------------- */
     $tiendaPrincipal = current($tiendas);
 
     return [
@@ -176,6 +179,7 @@ function prepararSincronizacionAnalistaDev(PDO $pdo, array $usuario, array $tien
                 'altillos'      => $altillos,
                 'punto_venta'   => $puntoVenta,
                 'pre_variance'  => $preVariance,
+                'recuento'      => $recuento,
             ],
         ],
     ];
@@ -848,6 +852,343 @@ function obtenerUbicacionesMultiplesPreVarianceDev(PDO $pdo, int $idAgenda, arra
     $params[] = $idConteo1;                     // c1 subquery
     $params[] = $idConteo2;                     // op subquery
     $params[] = $idConteo2;                     // pv subquery
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+
+    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+/* ============================================================================
+   Recuento — punto de entrada
+   ============================================================================ */
+
+function obtenerRecuentoAnalistaDev(PDO $pdo, int $idAgenda, ?int $idKardex, ?int $idConteo1, ?int $idConteo2, ?int $idConteo3): array
+{
+    if ($idKardex === null || $idConteo1 === null) {
+        return obtenerRecuentoVacioAnalistaDev();
+    }
+
+    $c1 = $idConteo1;
+    $c2 = $idConteo2 ?? 0;
+    $c3 = $idConteo3 ?? 0;
+
+    $listado = obtenerListadoRecuentoDev($pdo, $idAgenda, $idKardex, $c1, $c2, $c3);
+
+    // Obtener ubicaciones de todos los SKUs en una sola query
+    $todosLosSkuIds = array_column($listado, 'id_producto');
+    $todasLasUbicaciones = [];
+    if (!empty($todosLosSkuIds)) {
+        $todasLasUbicaciones = obtenerUbicacionesMultiplesRecuentoDev($pdo, $idAgenda, $todosLosSkuIds, $c1, $c2, $c3);
+    }
+
+    // Agrupar ubicaciones por SKU
+    $ubicacionesPorSku = [];
+    foreach ($todasLasUbicaciones as $u) {
+        $skuId = $u['id_producto'];
+        if (!isset($ubicacionesPorSku[$skuId])) {
+            $ubicacionesPorSku[$skuId] = [];
+        }
+        $ubicacionesPorSku[$skuId][] = [
+            'id_tag_backend'         => $u['id_tag'],
+            'numero_tag'             => $u['numero_tag'],
+            'zona'                   => $u['zona'],
+            'cantidad_inventariada'  => (float) $u['cantidad_inventariada'],
+            'cantidad_recuento'      => $u['cantidad_recuento'] !== null ? (float) $u['cantidad_recuento'] : null,
+        ];
+    }
+
+    // Construir productos con sus ubicaciones
+    $productos = [];
+    foreach ($listado as $fila) {
+        $skuId = (int) $fila['id_producto'];
+        $productos[] = [
+            'id_producto_backend'   => $skuId,
+            'sku'                   => $fila['sku'] ?? '',
+            'descripcion'           => $fila['descripcion_producto'] ?? null,
+            'stock_teorico'         => (float) ($fila['teorico'] ?? 0),
+            'valor_unitario'        => (float) ($fila['costo_unitario'] ?? 0),
+            'fisico_actual'         => (float) ($fila['fisico_actual'] ?? 0),
+            'diferencia_unidades'   => (float) ($fila['diferencia_unidades'] ?? 0),
+            'diferencia_en_costo'   => (float) ($fila['diferencia_en_costo'] ?? 0),
+            'es_pre_variance'       => (int) ($fila['es_pre_variance'] ?? 0) === 1,
+            'estado_recuento'       => $fila['estado_recuento'] ?? 'PENDIENTE',
+            'ubicaciones'           => $ubicacionesPorSku[$skuId] ?? [],
+        ];
+    }
+
+    // Resumen
+    $totalSku = count($productos);
+    $skuPendientes = 0;
+    $skuRecontados = 0;
+    $diferenciaTotal = 0.0;
+    $skuConMayorDiferencia = null;
+    $mayorDiferencia = 0.0;
+
+    foreach ($productos as $p) {
+        if ($p['estado_recuento'] === 'RECONTADO') {
+            $skuRecontados++;
+        } else {
+            $skuPendientes++;
+        }
+        $diferenciaTotal += $p['diferencia_en_costo'];
+        if (abs($p['diferencia_en_costo']) > abs($mayorDiferencia)) {
+            $mayorDiferencia = $p['diferencia_en_costo'];
+            $skuConMayorDiferencia = $p;
+        }
+    }
+
+    return [
+        'resumen' => [
+            'sku_total'                     => $totalSku,
+            'sku_pendientes'                => $skuPendientes,
+            'sku_recontados'                => $skuRecontados,
+            'diferencia_total'              => $diferenciaTotal,
+            'mayor_diferencia_valor'        => $mayorDiferencia,
+            'mayor_diferencia_sku'          => $skuConMayorDiferencia ? $skuConMayorDiferencia['sku'] : null,
+            'mayor_diferencia_descripcion'  => $skuConMayorDiferencia ? $skuConMayorDiferencia['descripcion'] : null,
+        ],
+        'productos' => $productos,
+    ];
+}
+
+function obtenerRecuentoVacioAnalistaDev(): array
+{
+    return [
+        'resumen' => [
+            'sku_total'                     => 0,
+            'sku_pendientes'                => 0,
+            'sku_recontados'                => 0,
+            'diferencia_total'              => 0,
+            'mayor_diferencia_valor'        => 0,
+            'mayor_diferencia_sku'          => null,
+            'mayor_diferencia_descripcion'  => null,
+        ],
+        'productos' => [],
+    ];
+}
+
+/* ============================================================================
+   Q20 — Listado Recuento (diferencia contra Kárdex, excluye PV por defecto)
+   ============================================================================ */
+
+function obtenerListadoRecuentoDev(PDO $pdo, int $idAgenda, int $idKardex, int $idConteo1, int $idConteo2, int $idConteo3): array
+{
+    $sql = "SELECT
+        p.id_producto,
+        p.sku,
+        p.descripcion_producto,
+        kd.stock_teorico AS teorico,
+        kd.valor_unitario AS costo_unitario,
+        SUM(v.cantidad_vigente) AS fisico_actual,
+        SUM(v.cantidad_vigente) - kd.stock_teorico AS diferencia_unidades,
+        (SUM(v.cantidad_vigente) - kd.stock_teorico) * kd.valor_unitario AS diferencia_en_costo,
+        CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM sod_inv_conteo_det AS r
+                WHERE r.id_conteo = :id_conteo_3_check
+                  AND r.id_producto = p.id_producto
+                  AND r.id_reconteo IS NULL
+                  AND r.origen = 'SGO_RECUENTO'
+                  AND r.estado_registro = 'VIGENTE'
+            )
+            THEN 1
+            ELSE 0
+        END AS tiene_c3,
+        CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM sod_inv_conteo_det AS r
+                WHERE r.id_conteo = :id_conteo_2_pv
+                  AND r.id_producto = p.id_producto
+                  AND r.id_reconteo IS NULL
+                  AND r.origen = 'SGO_PREVARIANCE'
+                  AND r.estado_registro = 'VIGENTE'
+            )
+            THEN 1
+            ELSE 0
+        END AS es_pre_variance
+    FROM (
+        SELECT u.id_producto, u.id_tag,
+            CASE
+                WHEN rc.cantidad_c3 IS NOT NULL THEN rc.cantidad_c3
+                WHEN pv.cantidad_pre_variance IS NOT NULL THEN pv.cantidad_pre_variance
+                WHEN op.cantidad_operacional IS NOT NULL THEN op.cantidad_operacional
+                WHEN c1.cantidad_c1 IS NOT NULL THEN c1.cantidad_c1
+                ELSE 0
+            END AS cantidad_vigente
+        FROM (
+            SELECT id_producto, id_tag
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_1
+              AND estado_registro = 'VIGENTE'
+            UNION
+            SELECT id_producto, id_tag
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_2
+              AND id_reconteo IS NULL
+              AND origen IN ('SGO_ANALISTA','SGO_PREVARIANCE')
+              AND estado_registro = 'VIGENTE'
+            UNION
+            SELECT id_producto, id_tag
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_3_u
+              AND id_reconteo IS NULL
+              AND origen = 'SGO_RECUENTO'
+              AND estado_registro = 'VIGENTE'
+        ) AS u
+        LEFT JOIN (
+            SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_c1
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_1_c1
+              AND estado_registro = 'VIGENTE'
+            GROUP BY id_producto, id_tag
+        ) AS c1 ON c1.id_producto = u.id_producto AND c1.id_tag = u.id_tag
+        LEFT JOIN (
+            SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_operacional
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_2_op
+              AND id_reconteo IS NULL
+              AND origen = 'SGO_ANALISTA'
+              AND estado_registro = 'VIGENTE'
+            GROUP BY id_producto, id_tag
+        ) AS op ON op.id_producto = u.id_producto AND op.id_tag = u.id_tag
+        LEFT JOIN (
+            SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_pre_variance
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_2_pv_u
+              AND id_reconteo IS NULL
+              AND origen = 'SGO_PREVARIANCE'
+              AND estado_registro = 'VIGENTE'
+            GROUP BY id_producto, id_tag
+        ) AS pv ON pv.id_producto = u.id_producto AND pv.id_tag = u.id_tag
+        LEFT JOIN (
+            SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_c3
+            FROM sod_inv_conteo_det
+            WHERE id_conteo = :id_conteo_3_rc
+              AND id_reconteo IS NULL
+              AND origen = 'SGO_RECUENTO'
+              AND estado_registro = 'VIGENTE'
+            GROUP BY id_producto, id_tag
+        ) AS rc ON rc.id_producto = u.id_producto AND rc.id_tag = u.id_tag
+    ) AS v
+    INNER JOIN sod_cfg_producto AS p ON p.id_producto = v.id_producto
+    INNER JOIN sod_inv_kardex_det AS kd ON kd.id_kardex = :id_kardex AND kd.id_producto = p.id_producto
+    GROUP BY p.id_producto, p.sku, p.descripcion_producto, kd.stock_teorico, kd.valor_unitario
+    HAVING (
+            ABS(SUM(v.cantidad_vigente) - kd.stock_teorico) > 0.0005
+            OR tiene_c3 = 1
+        )
+        AND es_pre_variance = 0
+    ORDER BY ABS((SUM(v.cantidad_vigente) - kd.stock_teorico) * kd.valor_unitario) DESC, p.sku";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([
+        ':id_kardex'       => $idKardex,
+        ':id_conteo_1'     => $idConteo1,
+        ':id_conteo_2'     => $idConteo2,
+        ':id_conteo_3_u'   => $idConteo3,
+        ':id_conteo_3_check' => $idConteo3,
+        ':id_conteo_2_pv'  => $idConteo2,
+        ':id_conteo_1_c1'  => $idConteo1,
+        ':id_conteo_2_op'  => $idConteo2,
+        ':id_conteo_2_pv_u' => $idConteo2,
+        ':id_conteo_3_rc'  => $idConteo3,
+    ]);
+
+    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+/* ============================================================================
+   Q21/Q22 — Ubicaciones de múltiples SKUs en Recuento
+   ============================================================================ */
+
+function obtenerUbicacionesMultiplesRecuentoDev(PDO $pdo, int $idAgenda, array $skuIds, int $idConteo1, int $idConteo2, int $idConteo3): array
+{
+    if (empty($skuIds)) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($skuIds), '?'));
+
+    $sql = "SELECT
+        u.id_producto,
+        t.id_tag,
+        t.numero_tag,
+        COALESCE(rz.nombre_zona_reporte, tu.nombre_tipo_ubicacion, 'Sin zona') AS zona,
+        CASE
+            WHEN rc.cantidad_c3 IS NOT NULL THEN rc.cantidad_c3
+            WHEN pv.cantidad_pre_variance IS NOT NULL THEN pv.cantidad_pre_variance
+            WHEN op.cantidad_operacional IS NOT NULL THEN op.cantidad_operacional
+            WHEN c1.cantidad_c1 IS NOT NULL THEN c1.cantidad_c1
+            ELSE 0
+        END AS cantidad_inventariada,
+        rc.cantidad_c3 AS cantidad_recuento
+    FROM (
+        SELECT id_producto, id_tag
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = ?
+          AND id_producto IN ($placeholders)
+          AND estado_registro = 'VIGENTE'
+        UNION
+        SELECT id_producto, id_tag
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = ?
+          AND id_producto IN ($placeholders)
+          AND id_reconteo IS NULL
+          AND origen IN ('SGO_ANALISTA','SGO_PREVARIANCE')
+          AND estado_registro = 'VIGENTE'
+        UNION
+        SELECT id_producto, id_tag
+        FROM sod_inv_conteo_det
+        WHERE id_conteo = ?
+          AND id_producto IN ($placeholders)
+          AND id_reconteo IS NULL
+          AND origen = 'SGO_RECUENTO'
+          AND estado_registro = 'VIGENTE'
+    ) AS u
+    INNER JOIN sod_inv_tag AS t ON t.id_tag = u.id_tag AND t.id_agenda = ?
+    LEFT JOIN sod_cfg_tipo_ubicacion AS tu ON tu.id_tipo_ubicacion = t.id_tipo_ubicacion
+    LEFT JOIN sod_rep_zona_tag_regla AS rz ON rz.fl_activo = 'S' AND t.numero_tag BETWEEN rz.tag_desde AND rz.tag_hasta
+    LEFT JOIN (
+        SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_c1
+        FROM sod_inv_conteo_det WHERE id_conteo = ? AND estado_registro = 'VIGENTE'
+        GROUP BY id_producto, id_tag
+    ) AS c1 ON c1.id_producto = u.id_producto AND c1.id_tag = u.id_tag
+    LEFT JOIN (
+        SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_operacional
+        FROM sod_inv_conteo_det WHERE id_conteo = ? AND id_reconteo IS NULL AND origen = 'SGO_ANALISTA' AND estado_registro = 'VIGENTE'
+        GROUP BY id_producto, id_tag
+    ) AS op ON op.id_producto = u.id_producto AND op.id_tag = u.id_tag
+    LEFT JOIN (
+        SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_pre_variance
+        FROM sod_inv_conteo_det WHERE id_conteo = ? AND id_reconteo IS NULL AND origen = 'SGO_PREVARIANCE' AND estado_registro = 'VIGENTE'
+        GROUP BY id_producto, id_tag
+    ) AS pv ON pv.id_producto = u.id_producto AND pv.id_tag = u.id_tag
+    LEFT JOIN (
+        SELECT id_producto, id_tag, SUM(cantidad) AS cantidad_c3
+        FROM sod_inv_conteo_det WHERE id_conteo = ? AND id_reconteo IS NULL AND origen = 'SGO_RECUENTO' AND estado_registro = 'VIGENTE'
+        GROUP BY id_producto, id_tag
+    ) AS rc ON rc.id_producto = u.id_producto AND rc.id_tag = u.id_tag
+    ORDER BY u.id_producto, t.numero_tag";
+
+    $params = [];
+    // UNION 1
+    $params[] = $idConteo1;
+    foreach ($skuIds as $id) { $params[] = $id; }
+    // UNION 2
+    $params[] = $idConteo2;
+    foreach ($skuIds as $id) { $params[] = $id; }
+    // UNION 3
+    $params[] = $idConteo3;
+    foreach ($skuIds as $id) { $params[] = $id; }
+    // JOINs
+    $params[] = $idAgenda;
+    $params[] = $idConteo1;  // c1
+    $params[] = $idConteo2;  // op
+    $params[] = $idConteo2;  // pv
+    $params[] = $idConteo3;  // rc
 
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
