@@ -1853,7 +1853,7 @@ function construirEventoDesdeAgenda(array $agenda, array $tienda): array
 {
     return [
         'sucursal_id'      => (int) $tienda['id_tienda'],
-        'fecha_programada' => date('d-m-Y'),
+        'fecha_programada' => $agenda['fecha_agenda'] ?? date('Y-m-d'),
         'estado'           => 'ABIERTO',
         'id_agenda'        => (int) ($agenda['id_agenda'] ?? 0),
     ];

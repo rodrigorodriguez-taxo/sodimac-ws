@@ -132,3 +132,211 @@ function registrarCapturaInicialSgo(array $input, array $detalles): array
 
     return $resultados;
 }
+
+/**
+ * Registra validación operacional de analista (Altillos/PDV) en Conteo 2.
+ *
+ * Ejecuta Q13 + Q14 contra taxochil_taxo_clientes.
+ * No usa SP; inserta directo en sod_inv_conteo y sod_inv_conteo_det.
+ *
+ * @param array $input  Payload completo recibido desde la APK.
+ * @param array $items  Array de items de validación.
+ * @return array        Resultado con id_conteo_2, total_productos, total_unidades.
+ * @throws Exception    Si falla la conexión PDO o cualquier operación SQL.
+ */
+function registrarValidacionAnalistaSgo(array $input, array $items): array
+{
+    global $pdo;
+
+    if (!$pdo instanceof PDO) {
+        throw new Exception('No se pudo obtener conexion PDO para SGO');
+    }
+
+    $idAgenda    = (int)$input['id_agenda'];
+    $login       = trim($input['login'] ?? '');
+    $motivo      = trim($input['motivo'] ?? 'Validacion operacional Sodimac');
+    $idTag       = (int)$input['id_tag'];
+
+    $totalProductos = count($items);
+    $totalUnidades  = 0;
+    foreach ($items as $item) {
+        $totalUnidades += (int)$item['cantidad'];
+    }
+
+    $resultados = [];
+
+    try {
+        $pdo->beginTransaction();
+
+        // ──────────── Q13: Crear/obtener Conteo 2 VALIDACION ────────────
+        $stmtQ13 = $pdo->prepare("
+            INSERT INTO sod_inv_conteo (
+                id_agenda,
+                numero_iteracion,
+                tipo_conteo,
+                estado_conteo,
+                motivo,
+                fecha_hora_inicio,
+                login_responsable,
+                fl_activo,
+                usuario_creacion
+            ) VALUES (
+                :id_agenda,
+                2,
+                'VALIDACION',
+                'EN_PROCESO',
+                :motivo,
+                NOW(),
+                :login_responsable,
+                'S',
+                :usuario_creacion
+            )
+            ON DUPLICATE KEY UPDATE
+                id_conteo = LAST_INSERT_ID(id_conteo),
+                estado_conteo = 'EN_PROCESO',
+                fecha_hora_termino = NULL,
+                login_responsable = VALUES(login_responsable),
+                fecha_modificacion = NOW(),
+                usuario_modificacion = VALUES(usuario_creacion)
+        ");
+
+        $stmtQ13->execute([
+            ':id_agenda'         => $idAgenda,
+            ':motivo'            => $motivo,
+            ':login_responsable' => $login,
+            ':usuario_creacion'  => $login,
+        ]);
+
+        $stmtId = $pdo->prepare("SELECT LAST_INSERT_ID() AS id_conteo_2");
+        $stmtId->execute();
+        $rowId = $stmtId->fetch(PDO::FETCH_ASSOC);
+
+        if (!$rowId) {
+            throw new Exception('No se pudo obtener id_conteo_2');
+        }
+
+        $idConteo2 = (int)$rowId['id_conteo_2'];
+
+        // ──────────── Q14: Guardar cada item ────────────
+        $stmtUpdate = $pdo->prepare("
+            UPDATE sod_inv_conteo_det
+            SET
+                estado_registro = 'REEMPLAZADO',
+                observacion = LEFT(
+                    CONCAT(
+                        COALESCE(observacion,''),
+                        ' | Reemplazado por nueva validacion operacional ',
+                        NOW()
+                    ),
+                    500
+                ),
+                fecha_modificacion = NOW(),
+                usuario_modificacion = :login
+            WHERE id_conteo = :id_conteo_2
+              AND id_agenda = :id_agenda
+              AND id_tag = :id_tag
+              AND id_producto = :id_producto
+              AND id_reconteo IS NULL
+              AND origen = 'SGO_ANALISTA'
+              AND estado_registro = 'VIGENTE'
+        ");
+
+        $stmtInsert = $pdo->prepare("
+            INSERT INTO sod_inv_conteo_det (
+                id_conteo,
+                id_reconteo,
+                id_agenda,
+                id_tag,
+                id_producto,
+                login_operador,
+                cantidad,
+                fecha_hora_captura,
+                fecha_hora_recepcion,
+                dispositivo,
+                origen,
+                id_origen_externo,
+                estado_registro,
+                observacion,
+                usuario_creacion
+            ) VALUES (
+                :id_conteo_2,
+                NULL,
+                :id_agenda,
+                :id_tag,
+                :id_producto,
+                :login_operador,
+                :cantidad,
+                :fecha_hora_captura,
+                NOW(3),
+                'APP_ANALISTA',
+                'SGO_ANALISTA',
+                :detalle_uid,
+                'VIGENTE',
+                :observacion,
+                :usuario_creacion
+            )
+            ON DUPLICATE KEY UPDATE
+                cantidad = VALUES(cantidad),
+                observacion = VALUES(observacion),
+                fecha_hora_captura = VALUES(fecha_hora_captura),
+                usuario_modificacion = VALUES(usuario_creacion),
+                fecha_modificacion = NOW()
+        ");
+
+        foreach ($items as $item) {
+            $idProducto  = (int)$item['id_producto'];
+            $cantidad    = (float)$item['cantidad'];
+            $detalleUid  = trim($item['detalle_uid']);
+            $fechaHora   = trim($item['fecha_hora']);
+            $decision    = strtoupper(trim($item['decision']));
+
+            $observacion = "Validacion: $decision - $motivo";
+
+            // 1. Reemplazar versión anterior SGO_ANALISTA del mismo SKU+TAG
+            $stmtUpdate->execute([
+                ':login'        => $login,
+                ':id_conteo_2'  => $idConteo2,
+                ':id_agenda'    => $idAgenda,
+                ':id_tag'       => $idTag,
+                ':id_producto'  => $idProducto,
+            ]);
+
+            // 2. Insertar nueva cantidad completa (idempotente por detalle_uid)
+            $stmtInsert->execute([
+                ':id_conteo_2'         => $idConteo2,
+                ':id_agenda'           => $idAgenda,
+                ':id_tag'              => $idTag,
+                ':id_producto'         => $idProducto,
+                ':login_operador'      => $login,
+                ':cantidad'            => $cantidad,
+                ':fecha_hora_captura'  => $fechaHora,
+                ':detalle_uid'         => $detalleUid,
+                ':observacion'         => $observacion,
+                ':usuario_creacion'    => $login,
+            ]);
+
+            $resultados[] = [
+                'id_producto'  => $idProducto,
+                'sku'          => $item['sku'],
+                'decision'     => $decision,
+                'cantidad'     => $cantidad,
+                'detalle_uid'  => $detalleUid,
+            ];
+        }
+
+        $pdo->commit();
+
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
+    }
+
+    return [
+        'id_conteo_2'    => $idConteo2,
+        'total_productos' => $totalProductos,
+        'total_unidades'  => $totalUnidades,
+        'resultados'      => $resultados,
+    ];
+}
