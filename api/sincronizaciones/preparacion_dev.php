@@ -1836,7 +1836,7 @@ function construirMuestraDesdeAgenda(array $agenda): array
 {
     return [
         'id_muestra'             => (int) ($agenda['id_muestra'] ?? 0),
-        'codigo_muestra'         => $agenda['codigo_muestra'] ?? '',
+        'codigo_muestra'         => (($agenda['codigo_muestra'] ?? '') !== '' && (int)($agenda['id_agenda'] ?? 0) > 0) ? ($agenda['codigo_muestra'] . '-AG' . (int)$agenda['id_agenda']) : ($agenda['codigo_muestra'] ?? ''),
         'nombre_muestra'         => $agenda['nombre_muestra'] ?? '',
         'id_agenda'              => (int) ($agenda['id_agenda'] ?? 0),
         'numero_agenda'          => $agenda['numero_agenda'] ?? null,

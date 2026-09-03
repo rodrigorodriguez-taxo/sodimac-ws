@@ -115,6 +115,25 @@ foreach ($detalles as $detalle) {
     $totalUnidades += (int)$detalle['cantidad_fisica'];
 }
 
+// ──────────── Idempotencia: si ya fue procesado, responder OK inmediato ────────────
+$stmtExistente = $pdo->prepare("
+    SELECT id, estado, total_productos, total_unidades
+    FROM sod_pda_tag_carga
+    WHERE carga_uid = :carga_uid
+    LIMIT 1
+");
+$stmtExistente->execute([':carga_uid' => $cargaUid]);
+$rowExistente = $stmtExistente->fetch(PDO::FETCH_ASSOC);
+
+if ($rowExistente && strtoupper(trim($rowExistente['estado'])) === 'PROCESADO') {
+    okResponse([
+        'carga_uid'       => $cargaUid,
+        'carga_id'        => (int)$rowExistente['id'],
+        'total_productos' => isset($rowExistente['total_productos']) ? (int)$rowExistente['total_productos'] : $totalProductos,
+        'total_unidades'  => isset($rowExistente['total_unidades']) ? (float)$rowExistente['total_unidades'] : $totalUnidades,
+    ], 'TAG ya procesado anteriormente');
+}
+
 // ──────────── Validaciones para SP (solo iteracion = 1) ────────────
 if ($iteracion === 1) {
     if ($numeroAgenda === '' || in_array(strtolower($numeroAgenda), ['null', 'undefined'], true)) {

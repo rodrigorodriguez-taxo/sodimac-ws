@@ -60,18 +60,6 @@ function prepararSincronizacion(PDO $pdo, string $correo, string $rut): array
 
     /* --- 3. agenda lista del dia -------------------------------------------- */
     $fecha = date('Y-m-d');
-    if (($usuario['tipo_usuario'] ?? '') === 'ANALISTA_CLIENTE') {
-        $agendas = obtenerAgendasAnalista($pdo, $login, $fecha);
-        if (!$agendas) {
-            $agendas = obtenerAgendasAnalistaFallback($pdo, $login, $fecha);
-        }
-        if (!$agendas) {
-            errorResponse('No existen agendas listas para hoy', 401);
-        }
-
-        return prepararSincronizacionAnalista($pdo, $usuario, $tiendas, current($agendas));
-    }
-
     $agendas = obtenerAgendas($pdo, $login, $fecha);
     if (!$agendas) {
         $agendas = obtenerAgendasFallbackPrueba($pdo, $login, $fecha);
@@ -80,14 +68,23 @@ function prepararSincronizacion(PDO $pdo, string $correo, string $rut): array
         errorResponse('No existen agendas listas para hoy', 401);
     }
 
-    return prepararSincronizacionOperador($pdo, $usuario, $tiendas, current($agendas));
+    $agendaSeleccionada = current($agendas);
+
+    /* --- 4. separar por perfil ---------------------------------------------- */
+    if (($usuario['tipo_usuario'] ?? '') === 'ANALISTA_CLIENTE') {
+        return prepararSincronizacionAnalistaDev($pdo, $usuario, $tiendas, $agendaSeleccionada);
+    }
+
+    return prepararSincronizacionOperadorDev($pdo, $usuario, $tiendas, $agendaSeleccionada);
 }
 
 /* ============================================================================
-   Flujo OPERADOR — contrato productivo existente, sin mezclar queries analista.
+   Flujo OPERADOR — extraído de prepararSincronizacion()
+   Contrato APK invariado: usuario, tiendas, muestras, eventos, productos,
+   zonas_tienda.
    ============================================================================ */
 
-function prepararSincronizacionOperador(PDO $pdo, array $usuario, array $tiendas, array $agendaSeleccionada): array
+function prepararSincronizacionOperadorDev(PDO $pdo, array $usuario, array $tiendas, array $agendaSeleccionada): array
 {
     $login = $usuario['login'];
 
@@ -115,34 +112,33 @@ function prepararSincronizacionOperador(PDO $pdo, array $usuario, array $tiendas
     ];
 }
 
-
 /* ============================================================================
    Flujo ANALISTA_CLIENTE — contrato liviano A0.5
    No descarga muestras ni productos completos. Devuelve solo contexto,
    conteos y validación operacional (Altillos/PDV/etc).
    ============================================================================ */
 
-function prepararSincronizacionAnalista(PDO $pdo, array $usuario, array $tiendas, array $agendaSeleccionada): array
+function prepararSincronizacionAnalistaDev(PDO $pdo, array $usuario, array $tiendas, array $agendaSeleccionada): array
 {
     /* --- 4. construir evento desde agenda ------------------------------------ */
     $eventos = construirEventoDesdeAgenda($agendaSeleccionada, current($tiendas));
 
     /* --- 5. resolver conteos ------------------------------------------------- */
     $idAgenda = (int) $agendaSeleccionada['id_agenda'];
-    $conteos  = obtenerConteosAnalista($pdo, $idAgenda);
+    $conteos  = obtenerConteosAnalistaDev($pdo, $idAgenda);
 
     /* --- 6. altillos lectura ------------------------------------------------- */
-    $altillos = obtenerAltillosAnalista($pdo, $idAgenda, $conteos['id_conteo_1'], $conteos['id_conteo_2']);
+    $altillos = obtenerAltillosAnalistaDev($pdo, $idAgenda, $conteos['id_conteo_1'], $conteos['id_conteo_2']);
 
     /* --- 7. punto de venta lectura ------------------------------------------- */
-    $puntoVenta = obtenerPuntoVentaAnalista($pdo, $idAgenda, $conteos['id_conteo_1'], $conteos['id_conteo_2']);
+    $puntoVenta = obtenerPuntoVentaAnalistaDev($pdo, $idAgenda, $conteos['id_conteo_1'], $conteos['id_conteo_2']);
 
     /* --- 8. pre variance lectura --------------------------------------------- */
     $idKardex = $agendaSeleccionada['id_kardex'] !== null ? (int) $agendaSeleccionada['id_kardex'] : null;
-    $preVariance = obtenerPreVarianceAnalista($pdo, $idAgenda, $idKardex, $conteos['id_conteo_1'], $conteos['id_conteo_2']);
+    $preVariance = obtenerPreVarianceAnalistaDev($pdo, $idAgenda, $idKardex, $conteos['id_conteo_1'], $conteos['id_conteo_2']);
 
     /* --- 9. recuento lectura ------------------------------------------------- */
-    $recuento = obtenerRecuentoAnalista($pdo, $idAgenda, $idKardex, $conteos['id_conteo_1'], $conteos['id_conteo_2'], $conteos['id_conteo_3']);
+    $recuento = obtenerRecuentoAnalistaDev($pdo, $idAgenda, $idKardex, $conteos['id_conteo_1'], $conteos['id_conteo_2'], $conteos['id_conteo_3']);
 
     /* --- 10. contexto analista ----------------------------------------------- */
     $tiendaPrincipal = current($tiendas);
@@ -208,7 +204,7 @@ function obtenerZonasTiendaDefault(): array
    Q03 — Resolver Conteo 1, Conteo 2 y Conteo 3
    ============================================================================ */
 
-function obtenerConteosAnalista(PDO $pdo, int $idAgenda): array
+function obtenerConteosAnalistaDev(PDO $pdo, int $idAgenda): array
 {
     $sql = "SELECT
         MAX(
@@ -252,32 +248,32 @@ function obtenerConteosAnalista(PDO $pdo, int $idAgenda): array
    Validación por zona — punto de entrada genérico
    ============================================================================ */
 
-function obtenerAltillosAnalista(PDO $pdo, int $idAgenda, ?int $idConteo1, ?int $idConteo2): array
+function obtenerAltillosAnalistaDev(PDO $pdo, int $idAgenda, ?int $idConteo1, ?int $idConteo2): array
 {
-    return obtenerValidacionZonaAnalista($pdo, $idAgenda, $idConteo1, $idConteo2, 'ALTILLO', 'Altillo', 100);
+    return obtenerValidacionZonaAnalistaDev($pdo, $idAgenda, $idConteo1, $idConteo2, 'ALTILLO', 'Altillo', 100);
 }
 
-function obtenerPuntoVentaAnalista(PDO $pdo, int $idAgenda, ?int $idConteo1, ?int $idConteo2): array
+function obtenerPuntoVentaAnalistaDev(PDO $pdo, int $idAgenda, ?int $idConteo1, ?int $idConteo2): array
 {
-    return obtenerValidacionZonaAnalista($pdo, $idAgenda, $idConteo1, $idConteo2, 'PUNTO_VENTA', 'Punto de venta', 30);
+    return obtenerValidacionZonaAnalistaDev($pdo, $idAgenda, $idConteo1, $idConteo2, 'PUNTO_VENTA', 'Punto de venta', 30);
 }
 
-function obtenerValidacionZonaAnalista(PDO $pdo, int $idAgenda, ?int $idConteo1, ?int $idConteo2, string $codigoZona, string $nombreZona, int $objetivoPorcentaje): array
+function obtenerValidacionZonaAnalistaDev(PDO $pdo, int $idAgenda, ?int $idConteo1, ?int $idConteo2, string $codigoZona, string $nombreZona, int $objetivoPorcentaje): array
 {
     if ($idConteo1 === null) {
-        return obtenerValidacionZonaVacioAnalista($codigoZona, $nombreZona, $objetivoPorcentaje);
+        return obtenerValidacionZonaVacioAnalistaDev($codigoZona, $nombreZona, $objetivoPorcentaje);
     }
 
     $c1 = $idConteo1;
     $c2 = $idConteo2 ?? 0;
 
-    $dataset = obtenerDatasetValidacionZonaAnalista($pdo, $idAgenda, $c1, $c2, $codigoZona);
-    $avance  = obtenerAvanceValidacionZonaAnalista($pdo, $idAgenda, $c1, $c2, $codigoZona);
+    $dataset = obtenerDatasetValidacionZonaAnalistaDev($pdo, $idAgenda, $c1, $c2, $codigoZona);
+    $avance  = obtenerAvanceValidacionZonaAnalistaDev($pdo, $idAgenda, $c1, $c2, $codigoZona);
 
-    return construirValidacionZonaAnalista($dataset, $avance, $codigoZona, $nombreZona, $objetivoPorcentaje);
+    return construirValidacionZonaAnalistaDev($dataset, $avance, $codigoZona, $nombreZona, $objetivoPorcentaje);
 }
 
-function obtenerValidacionZonaVacioAnalista(string $codigoZona, string $nombreZona, int $objetivoPorcentaje): array
+function obtenerValidacionZonaVacioAnalistaDev(string $codigoZona, string $nombreZona, int $objetivoPorcentaje): array
 {
     return [
         'resumen' => [
@@ -299,7 +295,7 @@ function obtenerValidacionZonaVacioAnalista(string $codigoZona, string $nombreZo
    Q11 — Dataset operacional por zona (filtro parametrizable)
    ============================================================================ */
 
-function obtenerDatasetValidacionZonaAnalista(PDO $pdo, int $idAgenda, int $idConteo1, int $idConteo2, string $codigoZona): array
+function obtenerDatasetValidacionZonaAnalistaDev(PDO $pdo, int $idAgenda, int $idConteo1, int $idConteo2, string $codigoZona): array
 {
     $sql = "SELECT
         t.id_tag,
@@ -397,7 +393,7 @@ function obtenerDatasetValidacionZonaAnalista(PDO $pdo, int $idAgenda, int $idCo
    Q12 — Avance por zona (filtro parametrizable)
    ============================================================================ */
 
-function obtenerAvanceValidacionZonaAnalista(PDO $pdo, int $idAgenda, int $idConteo1, int $idConteo2, string $codigoZona): array
+function obtenerAvanceValidacionZonaAnalistaDev(PDO $pdo, int $idAgenda, int $idConteo1, int $idConteo2, string $codigoZona): array
 {
     $sql = "SELECT
         x.codigo_zona,
@@ -483,9 +479,9 @@ function obtenerAvanceValidacionZonaAnalista(PDO $pdo, int $idAgenda, int $idCon
    Construir estructura de validación desde dataset + avance
    ============================================================================ */
 
-function construirValidacionZonaAnalista(array $dataset, array $avance, string $codigoZona, string $nombreZona, int $objetivoPorcentaje): array
+function construirValidacionZonaAnalistaDev(array $dataset, array $avance, string $codigoZona, string $nombreZona, int $objetivoPorcentaje): array
 {
-    $resultado = obtenerValidacionZonaVacioAnalista($codigoZona, $nombreZona, $objetivoPorcentaje);
+    $resultado = obtenerValidacionZonaVacioAnalistaDev($codigoZona, $nombreZona, $objetivoPorcentaje);
 
     /* --- resumen desde avance ------------------------------------------------ */
     if (!empty($avance)) {
@@ -560,22 +556,22 @@ function construirValidacionZonaAnalista(array $dataset, array $avance, string $
    Pre Variance — punto de entrada
    ============================================================================ */
 
-function obtenerPreVarianceAnalista(PDO $pdo, int $idAgenda, ?int $idKardex, ?int $idConteo1, ?int $idConteo2): array
+function obtenerPreVarianceAnalistaDev(PDO $pdo, int $idAgenda, ?int $idKardex, ?int $idConteo1, ?int $idConteo2): array
 {
     if ($idKardex === null || $idConteo1 === null) {
-        return obtenerPreVarianceVacioAnalista();
+        return obtenerPreVarianceVacioAnalistaDev();
     }
 
     $c1 = $idConteo1;
     $c2 = $idConteo2 ?? 0;
 
-    $listado = obtenerListadoPreVariance($pdo, $idAgenda, $idKardex, $c1, $c2);
+    $listado = obtenerListadoPreVarianceDev($pdo, $idAgenda, $idKardex, $c1, $c2);
 
     // Obtener ubicaciones de todos los SKUs en una sola query
     $todosLosSkuIds = array_column($listado, 'id_producto');
     $todasLasUbicaciones = [];
     if (!empty($todosLosSkuIds)) {
-        $todasLasUbicaciones = obtenerUbicacionesMultiplesPreVariance($pdo, $idAgenda, $todosLosSkuIds, $c1, $c2);
+        $todasLasUbicaciones = obtenerUbicacionesMultiplesPreVarianceDev($pdo, $idAgenda, $todosLosSkuIds, $c1, $c2);
     }
 
     // Agrupar ubicaciones por SKU
@@ -648,7 +644,7 @@ function obtenerPreVarianceAnalista(PDO $pdo, int $idAgenda, ?int $idKardex, ?in
     ];
 }
 
-function obtenerPreVarianceVacioAnalista(): array
+function obtenerPreVarianceVacioAnalistaDev(): array
 {
     return [
         'resumen' => [
@@ -668,7 +664,7 @@ function obtenerPreVarianceVacioAnalista(): array
    Q15 — Listado Pre Variance (diferencia valorizada absoluta > 500000)
    ============================================================================ */
 
-function obtenerListadoPreVariance(PDO $pdo, int $idAgenda, int $idKardex, int $idConteo1, int $idConteo2): array
+function obtenerListadoPreVarianceDev(PDO $pdo, int $idAgenda, int $idKardex, int $idConteo1, int $idConteo2): array
 {
     $sql = "SELECT
         p.id_producto,
@@ -781,7 +777,7 @@ function obtenerListadoPreVariance(PDO $pdo, int $idAgenda, int $idKardex, int $
    Q16 — Ubicaciones de múltiples SKUs en Pre Variance
    ============================================================================ */
 
-function obtenerUbicacionesMultiplesPreVariance(PDO $pdo, int $idAgenda, array $skuIds, int $idConteo1, int $idConteo2): array
+function obtenerUbicacionesMultiplesPreVarianceDev(PDO $pdo, int $idAgenda, array $skuIds, int $idConteo1, int $idConteo2): array
 {
     if (empty($skuIds)) {
         return [];
@@ -867,23 +863,23 @@ function obtenerUbicacionesMultiplesPreVariance(PDO $pdo, int $idAgenda, array $
    Recuento — punto de entrada
    ============================================================================ */
 
-function obtenerRecuentoAnalista(PDO $pdo, int $idAgenda, ?int $idKardex, ?int $idConteo1, ?int $idConteo2, ?int $idConteo3): array
+function obtenerRecuentoAnalistaDev(PDO $pdo, int $idAgenda, ?int $idKardex, ?int $idConteo1, ?int $idConteo2, ?int $idConteo3): array
 {
     if ($idKardex === null || $idConteo1 === null) {
-        return obtenerRecuentoVacioAnalista();
+        return obtenerRecuentoVacioAnalistaDev();
     }
 
     $c1 = $idConteo1;
     $c2 = $idConteo2 ?? 0;
     $c3 = $idConteo3 ?? 0;
 
-    $listado = obtenerListadoRecuento($pdo, $idAgenda, $idKardex, $c1, $c2, $c3);
+    $listado = obtenerListadoRecuentoDev($pdo, $idAgenda, $idKardex, $c1, $c2, $c3);
 
     // Obtener ubicaciones de todos los SKUs en una sola query
     $todosLosSkuIds = array_column($listado, 'id_producto');
     $todasLasUbicaciones = [];
     if (!empty($todosLosSkuIds)) {
-        $todasLasUbicaciones = obtenerUbicacionesMultiplesRecuento($pdo, $idAgenda, $todosLosSkuIds, $c1, $c2, $c3);
+        $todasLasUbicaciones = obtenerUbicacionesMultiplesRecuentoDev($pdo, $idAgenda, $todosLosSkuIds, $c1, $c2, $c3);
     }
 
     // Agrupar ubicaciones por SKU
@@ -956,7 +952,7 @@ function obtenerRecuentoAnalista(PDO $pdo, int $idAgenda, ?int $idKardex, ?int $
     ];
 }
 
-function obtenerRecuentoVacioAnalista(): array
+function obtenerRecuentoVacioAnalistaDev(): array
 {
     return [
         'resumen' => [
@@ -976,7 +972,7 @@ function obtenerRecuentoVacioAnalista(): array
    Q20 — Listado Recuento (diferencia contra Kárdex, excluye PV por defecto)
    ============================================================================ */
 
-function obtenerListadoRecuento(PDO $pdo, int $idAgenda, int $idKardex, int $idConteo1, int $idConteo2, int $idConteo3): array
+function obtenerListadoRecuentoDev(PDO $pdo, int $idAgenda, int $idKardex, int $idConteo1, int $idConteo2, int $idConteo3): array
 {
     $sql = "SELECT
         p.id_producto,
@@ -1108,7 +1104,7 @@ function obtenerListadoRecuento(PDO $pdo, int $idAgenda, int $idKardex, int $idC
    Q21/Q22 — Ubicaciones de múltiples SKUs en Recuento
    ============================================================================ */
 
-function obtenerUbicacionesMultiplesRecuento(PDO $pdo, int $idAgenda, array $skuIds, int $idConteo1, int $idConteo2, int $idConteo3): array
+function obtenerUbicacionesMultiplesRecuentoDev(PDO $pdo, int $idAgenda, array $skuIds, int $idConteo1, int $idConteo2, int $idConteo3): array
 {
     if (empty($skuIds)) {
         return [];
@@ -1198,221 +1194,6 @@ function obtenerUbicacionesMultiplesRecuento(PDO $pdo, int $idAgenda, array $sku
     $stmt->execute($params);
 
     return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-}
-
-/* ============================================================================
-   1. obtenerUsuario  (V6 — identidad funcional + RUT + vigencia)
-   Parametros: :login_1 (login), :login_2 (email), :rut_normalizado
-   ============================================================================ */
-
-
-/* ============================================================================
-   3. obtenerAgendas  (V3.0 — jornada operable + muestra valida con SKU)
-   Parametros: :login, :fecha (YYYY-MM-DD)
-   Regla: jornada operable + agenda operable + fl_muestra_ok='S' + sku>0
-   ============================================================================ */
-
-function obtenerAgendasAnalista(PDO $pdo, string $login, string $fecha): ?array
-{
-    $sql = "SELECT
-        a.id_agenda,
-        a.numero_agenda,
-        DATE(a.fecha_agenda) AS fecha_agenda,
-        a.secuencia_dia,
-
-        t.id_tienda,
-        t.codigo_tienda,
-        t.nombre_tienda,
-        t.id_zona_operativa,
-        z.codigo_zona,
-        z.nombre_zona,
-
-        ea.codigo_estado AS estado_agenda,
-
-        jo.id_jornada,
-        jo.estado_jornada,
-        COALESCE(jo.fl_jornada_operable, 'N') AS fl_jornada_operable,
-
-        p.id_muestra,
-        p.codigo_muestra,
-        p.nombre_muestra,
-        p.id_kardex,
-        p.codigo_kardex,
-        p.sku_muestra,
-        p.sku_kardex,
-        p.operadores_agenda,
-        p.fl_muestra_ok,
-        p.fl_kardex_ok,
-        p.fl_cobertura_ok,
-        p.fl_operadores_ok,
-        p.fl_lista_conteo,
-        p.estado_preparacion,
-
-        CASE
-            WHEN COALESCE(jo.fl_jornada_operable, 'N') = 'S'
-             AND ea.codigo_estado IN ('PLANIFICADA','ASIGNADA','LISTA','EN_CONTEO')
-             AND COALESCE(p.fl_muestra_ok, 'N') = 'S'
-             AND COALESCE(p.sku_muestra, 0) > 0
-                THEN 'S'
-            ELSE 'N'
-        END AS fl_puede_contar,
-
-        CASE
-            WHEN COALESCE(p.fl_kardex_ok, 'N') = 'S'
-             AND COALESCE(p.fl_cobertura_ok, 'N') = 'S'
-                THEN 'S'
-            ELSE 'N'
-        END AS fl_procesos_posteriores
-
-    FROM sod_ope_agenda AS a
-
-    INNER JOIN sod_cfg_tienda AS t
-            ON t.id_tienda = a.id_tienda
-
-    LEFT JOIN sod_cfg_zona_operativa AS z
-           ON z.id_zona_operativa = t.id_zona_operativa
-
-    INNER JOIN sod_ope_estado_agenda AS ea
-            ON ea.id_estado_agenda = a.id_estado_agenda
-
-    INNER JOIN vw_sod_agenda_preparacion_resumen AS p
-            ON p.id_agenda = a.id_agenda
-
-    INNER JOIN vw_sod_agenda_jornada_operativa AS jo
-            ON jo.id_agenda = a.id_agenda
-
-    WHERE DATE(a.fecha_agenda) = :fecha
-      AND a.fl_activo = 'S'
-      AND ea.codigo_estado NOT IN ('CERRADA', 'SUSPENDIDA')
-      AND jo.fl_jornada_operable = 'S'
-      AND p.fl_muestra_ok = 'S'
-      AND COALESCE(p.sku_muestra, 0) > 0
-      AND EXISTS (
-            SELECT 1
-            FROM vw_sod_dash_agenda_usuario AS d
-            WHERE d.id_agenda = a.id_agenda
-              AND CONVERT(TRIM(d.login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
-                  =
-                  CONVERT(TRIM(:login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
-          )
-    ORDER BY
-        t.nombre_tienda ASC,
-        a.secuencia_dia ASC,
-        a.numero_agenda ASC,
-        a.id_agenda ASC";
-
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([':login' => $login, ':fecha' => $fecha]);
-
-    $agendas = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    return $agendas ?: null;
-}
-
-/* ============================================================================
-   3-B. obtenerAgendasFallbackPrueba  (FALLBACK TEMPORAL PARA PRUEBAS)
-   Si no hay agenda para la fecha actual, busca la ultima agenda operable
-   anterior asignada al usuario con muestra valida.
-   NO USAR COMO REGLA PRODUCTIVA.
-   ============================================================================ */
-
-function obtenerAgendasAnalistaFallback(PDO $pdo, string $login, string $fecha): ?array
-{
-    $sql = "SELECT
-        a.id_agenda,
-        a.numero_agenda,
-        DATE(a.fecha_agenda) AS fecha_agenda,
-        a.secuencia_dia,
-
-        t.id_tienda,
-        t.codigo_tienda,
-        t.nombre_tienda,
-        t.id_zona_operativa,
-        z.codigo_zona,
-        z.nombre_zona,
-
-        ea.codigo_estado AS estado_agenda,
-
-        jo.id_jornada,
-        jo.estado_jornada,
-        COALESCE(jo.fl_jornada_operable, 'N') AS fl_jornada_operable,
-
-        p.id_muestra,
-        p.codigo_muestra,
-        p.nombre_muestra,
-        p.id_kardex,
-        p.codigo_kardex,
-        p.sku_muestra,
-        p.sku_kardex,
-        p.operadores_agenda,
-        p.fl_muestra_ok,
-        p.fl_kardex_ok,
-        p.fl_cobertura_ok,
-        p.fl_operadores_ok,
-        p.fl_lista_conteo,
-        p.estado_preparacion,
-
-        CASE
-            WHEN COALESCE(jo.fl_jornada_operable, 'N') = 'S'
-             AND ea.codigo_estado IN ('PLANIFICADA','ASIGNADA','LISTA','EN_CONTEO')
-             AND COALESCE(p.fl_muestra_ok, 'N') = 'S'
-             AND COALESCE(p.sku_muestra, 0) > 0
-                THEN 'S'
-            ELSE 'N'
-        END AS fl_puede_contar,
-
-        CASE
-            WHEN COALESCE(p.fl_kardex_ok, 'N') = 'S'
-             AND COALESCE(p.fl_cobertura_ok, 'N') = 'S'
-                THEN 'S'
-            ELSE 'N'
-        END AS fl_procesos_posteriores
-
-    FROM sod_ope_agenda AS a
-
-    INNER JOIN sod_cfg_tienda AS t
-            ON t.id_tienda = a.id_tienda
-
-    LEFT JOIN sod_cfg_zona_operativa AS z
-           ON z.id_zona_operativa = t.id_zona_operativa
-
-    INNER JOIN sod_ope_estado_agenda AS ea
-            ON ea.id_estado_agenda = a.id_estado_agenda
-
-    INNER JOIN vw_sod_agenda_preparacion_resumen AS p
-            ON p.id_agenda = a.id_agenda
-
-    INNER JOIN vw_sod_agenda_jornada_operativa AS jo
-            ON jo.id_agenda = a.id_agenda
-
-    WHERE DATE(a.fecha_agenda) <= :fecha
-      AND a.fl_activo = 'S'
-      AND ea.codigo_estado NOT IN ('CERRADA', 'SUSPENDIDA')
-      AND jo.fl_jornada_operable = 'S'
-      AND p.fl_muestra_ok = 'S'
-      AND COALESCE(p.sku_muestra, 0) > 0
-      AND EXISTS (
-            SELECT 1
-            FROM vw_sod_dash_agenda_usuario AS d
-            WHERE d.id_agenda = a.id_agenda
-              AND CONVERT(TRIM(d.login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
-                  =
-                  CONVERT(TRIM(:login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
-          )
-    ORDER BY
-        DATE(a.fecha_agenda) DESC,
-        t.nombre_tienda ASC,
-        a.secuencia_dia ASC,
-        a.numero_agenda ASC,
-        a.id_agenda ASC
-    LIMIT 1";
-
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([':login' => $login, ':fecha' => $fecha]);
-
-    $agendas = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    return $agendas ?: null;
 }
 
 /* ============================================================================
@@ -1546,171 +1327,91 @@ function obtenerTiendas(PDO $pdo, string $login): ?array
 function obtenerAgendas(PDO $pdo, string $login, string $fecha): ?array
 {
     $sql = "SELECT
-    a.id_agenda,
-    a.numero_agenda,
-    DATE(a.fecha_agenda) AS fecha_agenda,
-    a.secuencia_dia,
+        a.id_agenda,
+        a.numero_agenda,
+        DATE(a.fecha_agenda) AS fecha_agenda,
+        a.secuencia_dia,
 
-    t.id_tienda,
-    t.codigo_tienda,
-    t.nombre_tienda,
-    t.id_zona_operativa,
+        t.id_tienda,
+        t.codigo_tienda,
+        t.nombre_tienda,
+        t.id_zona_operativa,
+        z.codigo_zona,
+        z.nombre_zona,
 
-    z.codigo_zona,
-    z.nombre_zona,
+        ea.codigo_estado AS estado_agenda,
 
-    ea.codigo_estado AS estado_agenda,
+        jo.id_jornada,
+        jo.estado_jornada,
+        COALESCE(jo.fl_jornada_operable, 'N') AS fl_jornada_operable,
 
-    jo.id_jornada,
-    jo.estado_jornada,
-    COALESCE(
-        jo.fl_jornada_operable,
-        'N'
-    ) AS fl_jornada_operable,
-
-    p.id_muestra,
-    p.codigo_muestra,
-    p.nombre_muestra,
-
-    p.id_kardex,
-    p.codigo_kardex,
-
-    p.sku_muestra,
-    p.sku_kardex,
-    p.operadores_agenda,
-
-    p.fl_muestra_ok,
-    p.fl_kardex_ok,
-    p.fl_cobertura_ok,
-    p.fl_operadores_ok,
-    p.fl_lista_conteo,
-    p.estado_preparacion,
-
-    CASE
-        WHEN COALESCE(
-                 jo.fl_jornada_operable,
-                 'N'
-             ) = 'S'
-
-         AND ea.codigo_estado IN (
-                'PLANIFICADA',
-                'ASIGNADA',
-                'LISTA',
-                'EN_CONTEO'
-             )
-
-         AND COALESCE(
-                 p.fl_muestra_ok,
-                 'N'
-             ) = 'S'
-
-         AND COALESCE(
-                 p.sku_muestra,
-                 0
-             ) > 0
-
-        THEN 'S'
-
-        ELSE 'N'
-    END AS fl_puede_contar,
-
-    CASE
-        WHEN COALESCE(
-                 p.fl_kardex_ok,
-                 'N'
-             ) = 'S'
-
-         AND COALESCE(
-                 p.fl_cobertura_ok,
-                 'N'
-             ) = 'S'
-
-        THEN 'S'
-
-        ELSE 'N'
-    END AS fl_procesos_posteriores
-
-FROM sod_ope_agenda AS a
-
-INNER JOIN sod_cfg_tienda AS t
-        ON t.id_tienda = a.id_tienda
-
-LEFT JOIN sod_cfg_zona_operativa AS z
-       ON z.id_zona_operativa =
-          t.id_zona_operativa
-
-INNER JOIN sod_ope_estado_agenda AS ea
-        ON ea.id_estado_agenda =
-           a.id_estado_agenda
-
-INNER JOIN vw_sod_agenda_preparacion_resumen AS p
-        ON p.id_agenda =
-           a.id_agenda
-
-INNER JOIN vw_sod_agenda_jornada_operativa AS jo
-        ON jo.id_agenda =
-           a.id_agenda
-
-WHERE DATE(a.fecha_agenda) = :fecha
-
-  AND a.fl_activo =
-      'S'
-
-  AND ea.codigo_estado NOT IN (
-        'CERRADA',
-        'SUSPENDIDA'
-      )
-
-  AND jo.fl_jornada_operable =
-      'S'
-
-  AND p.fl_muestra_ok =
-      'S'
-
-  AND COALESCE(
+        p.id_muestra,
+        p.codigo_muestra,
+        p.nombre_muestra,
+        p.id_kardex,
+        p.codigo_kardex,
         p.sku_muestra,
-        0
-      ) > 0
-  AND EXISTS (
-        SELECT 1
+        p.sku_kardex,
+        p.operadores_agenda,
+        p.fl_muestra_ok,
+        p.fl_kardex_ok,
+        p.fl_cobertura_ok,
+        p.fl_operadores_ok,
+        p.fl_lista_conteo,
+        p.estado_preparacion,
 
-        FROM sod_ope_agenda_usuario AS au
+        CASE
+            WHEN COALESCE(jo.fl_jornada_operable, 'N') = 'S'
+             AND ea.codigo_estado IN ('PLANIFICADA','ASIGNADA','LISTA','EN_CONTEO')
+             AND COALESCE(p.fl_muestra_ok, 'N') = 'S'
+             AND COALESCE(p.sku_muestra, 0) > 0
+                THEN 'S'
+            ELSE 'N'
+        END AS fl_puede_contar,
 
-        WHERE au.id_agenda =
-              a.id_agenda
+        CASE
+            WHEN COALESCE(p.fl_kardex_ok, 'N') = 'S'
+             AND COALESCE(p.fl_cobertura_ok, 'N') = 'S'
+                THEN 'S'
+            ELSE 'N'
+        END AS fl_procesos_posteriores
 
-          AND CONVERT(
-                TRIM(au.login)
-                USING utf8mb4
-              ) COLLATE utf8mb4_unicode_ci
-              =
-              CONVERT(
-                TRIM(:login)
-                USING utf8mb4
-              ) COLLATE utf8mb4_unicode_ci
+    FROM sod_ope_agenda AS a
 
-          AND au.rol_agenda =
-              'OPERADOR'
+    INNER JOIN sod_cfg_tienda AS t
+            ON t.id_tienda = a.id_tienda
 
-          AND au.fl_activo =
-              'S'
+    LEFT JOIN sod_cfg_zona_operativa AS z
+           ON z.id_zona_operativa = t.id_zona_operativa
 
-          AND (
-                au.fecha_hora_inicio IS NULL
-                OR au.fecha_hora_inicio <= NOW()
-              )
+    INNER JOIN sod_ope_estado_agenda AS ea
+            ON ea.id_estado_agenda = a.id_estado_agenda
 
-          AND (
-                au.fecha_hora_fin IS NULL
-                OR au.fecha_hora_fin >= NOW()
-              )
-      )
+    INNER JOIN vw_sod_agenda_preparacion_resumen AS p
+            ON p.id_agenda = a.id_agenda
 
-ORDER BY
-    t.nombre_tienda ASC,
-    a.secuencia_dia ASC,
-    a.numero_agenda ASC,
-    a.id_agenda ASC;";
+    INNER JOIN vw_sod_agenda_jornada_operativa AS jo
+            ON jo.id_agenda = a.id_agenda
+
+    WHERE DATE(a.fecha_agenda) = :fecha
+      AND a.fl_activo = 'S'
+      AND ea.codigo_estado NOT IN ('CERRADA', 'SUSPENDIDA')
+      AND jo.fl_jornada_operable = 'S'
+      AND p.fl_muestra_ok = 'S'
+      AND COALESCE(p.sku_muestra, 0) > 0
+      AND EXISTS (
+            SELECT 1
+            FROM vw_sod_dash_agenda_usuario AS d
+            WHERE d.id_agenda = a.id_agenda
+              AND CONVERT(TRIM(d.login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+                  =
+                  CONVERT(TRIM(:login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+          )
+    ORDER BY
+        t.nombre_tienda ASC,
+        a.secuencia_dia ASC,
+        a.numero_agenda ASC,
+        a.id_agenda ASC";
 
     $stmt = $pdo->prepare($sql);
     $stmt->execute([':login' => $login, ':fecha' => $fecha]);
@@ -2135,7 +1836,7 @@ function construirMuestraDesdeAgenda(array $agenda): array
 {
     return [
         'id_muestra'             => (int) ($agenda['id_muestra'] ?? 0),
-        'codigo_muestra'         => $agenda['codigo_muestra'] ?? '',
+        'codigo_muestra'         => (($agenda['codigo_muestra'] ?? '') !== '' && (int)($agenda['id_agenda'] ?? 0) > 0) ? ($agenda['codigo_muestra'] . '-AG' . (int)$agenda['id_agenda']) : ($agenda['codigo_muestra'] ?? ''),
         'nombre_muestra'         => $agenda['nombre_muestra'] ?? '',
         'id_agenda'              => (int) ($agenda['id_agenda'] ?? 0),
         'numero_agenda'          => $agenda['numero_agenda'] ?? null,
