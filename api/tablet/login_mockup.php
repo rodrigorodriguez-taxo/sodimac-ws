@@ -75,10 +75,13 @@ $user = $usuarios[$rut];
 
 okResponse([
     'user' => [
+        'id'              => 1,
         'correo'          => $user['correo'],
         'rut'             => $user['rut'],
         'rut_normalizado' => $user['rut_normalizado'],
         'nombre'          => $user['nombre'],
-        'rol'             => $user['rol'],
+        'tipo'            => $user['rol'],
     ],
+    'token'      => 'mock_token_' . bin2hex(random_bytes(16)),
+    'expires_in' => 3600,
 ], 'Login mockup exitoso');
