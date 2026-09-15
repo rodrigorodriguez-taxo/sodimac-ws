@@ -2,8 +2,9 @@
 /**
  * Servicio SGO - Captura Inicial
  *
- * Llama a PRC_SOD_PDA_CAPTURA_REGISTRAR_V1 por cada detalle del TAG finalizado.
- * Usa require_once '../../config/database.php' para conectar a taxochil_taxo_clientes.
+ * Llama a PRC_SOD_PDA_CAPTURA_REGISTRAR_V1 una vez por cada lectura
+ * individual del TAG finalizado, usando lectura.cantidad como cantidad
+ * enviada y lectura.lectura_uid como p_id_origen_externo.
  *
  * Este archivo NO debe ser invocado directamente por la APK.
  * Es un servicio interno usado por tag-finalizado.php.
@@ -12,11 +13,11 @@
 require_once '../../config/database.php';
 
 /**
- * Registra captura inicial en SGO llamando el SP una vez por cada detalle.
+ * Registra captura inicial en SGO llamando el SP una vez por cada lectura.
  *
  * @param array $input    Payload completo recibido desde la APK.
  * @param array $detalles Array de detalles del conteo.
- * @return array          Resultados del SP por cada detalle.
+ * @return array          Resultados del SP por cada lectura.
  * @throws Exception      Si falla la conexion PDO o cualquier CALL al SP.
  */
 function registrarCapturaInicialSgo(array $input, array $detalles): array
@@ -65,69 +66,77 @@ function registrarCapturaInicialSgo(array $input, array $detalles): array
     foreach ($detalles as $detalle) {
         $codigoUsable = trim($detalle['codigo_lectura'] ?? $detalle['codigo_barras'] ?? $detalle['sku'] ?? '');
         $detalleUid   = trim($detalle['detalle_uid'] ?? '');
+        $lecturas     = $detalle['lecturas'] ?? [];
 
-        $ok = $stmt->execute([
-            ':p_tipo_captura'       => 'INICIAL',
-            ':p_numero_agenda'      => $numeroAgenda,
-            ':p_id_reconteo'        => null,
-            ':p_login_operador'     => $operadorLogin,
-            ':p_numero_tag'         => $tagCodigo,
-            ':p_codigo_ubicacion'   => $zonaNombre,
-            ':p_sku'                => $codigoUsable,
-            ':p_cantidad'           => (int)$detalle['cantidad_fisica'],
-            ':p_fecha_hora_captura' => trim($detalle['fecha_hora'] ?? ''),
-            ':p_numero_pda'         => $pdaCodigo,
-            ':p_secuencia_local'    => null,
-            ':p_id_origen_externo'  => $detalleUid,
-            ':p_observacion'        => $observacion,
-        ]);
+        foreach ($lecturas as $idx => $lectura) {
+            $lecturaUid = trim($lectura['lectura_uid'] ?? '');
+            $cantidad   = isset($lectura['cantidad']) ? (int)$lectura['cantidad'] : 0;
+            $fechaHora  = trim($lectura['fecha_hora'] ?? $detalle['fecha_hora'] ?? '');
 
-        if ($ok === false) {
-            $errorInfo = $stmt->errorInfo();
-            throw new Exception(
-                "SP fallo para detalle $detalleUid: " . ($errorInfo[2] ?? 'execute() retorno false')
-            );
-        }
+            $ok = $stmt->execute([
+                ':p_tipo_captura'       => 'INICIAL',
+                ':p_numero_agenda'      => $numeroAgenda,
+                ':p_id_reconteo'        => null,
+                ':p_login_operador'     => $operadorLogin,
+                ':p_numero_tag'         => $tagCodigo,
+                ':p_codigo_ubicacion'   => $zonaNombre,
+                ':p_sku'                => $codigoUsable,
+                ':p_cantidad'           => $cantidad,
+                ':p_fecha_hora_captura' => $fechaHora,
+                ':p_numero_pda'         => $pdaCodigo,
+                ':p_secuencia_local'    => null,
+                ':p_id_origen_externo'  => $lecturaUid,
+                ':p_observacion'        => $observacion,
+            ]);
 
-        $fila = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($fila) {
-            $resultado = trim($fila['resultado'] ?? '');
-            $idConteoDet = $fila['id_conteo_det'] ?? null;
-            $idTag = $fila['id_tag'] ?? null;
-
-            // Si el SP devolvió un mensaje de error en lugar de INSERTADO/DUPLICADO_IGNORADO
-            if (strtoupper($resultado) !== 'INSERTADO' && strtoupper($resultado) !== 'DUPLICADO_IGNORADO') {
+            if ($ok === false) {
+                $errorInfo = $stmt->errorInfo();
                 throw new Exception(
-                    "SP rechazo detalle $detalleUid: " . ($fila['mensaje'] ?? $resultado)
+                    "SP fallo para lectura $lecturaUid: " . ($errorInfo[2] ?? 'execute() retorno false')
                 );
             }
 
-            if (empty($idConteoDet) || empty($idTag)) {
+            $fila = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($fila) {
+                $resultado   = trim($fila['resultado'] ?? '');
+                $idConteoDet = $fila['id_conteo_det'] ?? null;
+                $idTag       = $fila['id_tag'] ?? null;
+
+                if (strtoupper($resultado) !== 'INSERTADO' && strtoupper($resultado) !== 'DUPLICADO_IGNORADO') {
+                    throw new Exception(
+                        "SP rechazo lectura $lecturaUid: " . ($fila['mensaje'] ?? $resultado)
+                    );
+                }
+
+                if (empty($idConteoDet) || empty($idTag)) {
+                    throw new Exception(
+                        "SP respondio sin id_conteo_det o id_tag para lectura $lecturaUid"
+                    );
+                }
+
+                $resultados[] = [
+                    'detalle_uid'        => $detalleUid,
+                    'lectura_uid'        => $lecturaUid,
+                    'resultado'          => $resultado,
+                    'id_conteo_det'      => $idConteoDet,
+                    'id_conteo'          => $fila['id_conteo'] ?? null,
+                    'id_tag'             => $idTag,
+                    'id_producto'        => $fila['id_producto'] ?? null,
+                    'id_origen_externo'  => $fila['id_origen_externo'] ?? null,
+                    'sku'                => $fila['sku'] ?? null,
+                    'cantidad'           => $cantidad,
+                    'cantidad_evento'    => $fila['cantidad_evento'] ?? null,
+                    'mensaje'            => $fila['mensaje'] ?? null,
+                ];
+            } else {
                 throw new Exception(
-                    "SP respondio sin id_conteo_det o id_tag para $detalleUid"
+                    "SP no devolvio respuesta para lectura $lecturaUid"
                 );
             }
 
-            $resultados[] = [
-                'detalle_uid'        => $detalleUid,
-                'resultado'          => $resultado,
-                'id_conteo_det'      => $idConteoDet,
-                'id_conteo'          => $fila['id_conteo'] ?? null,
-                'id_tag'             => $idTag,
-                'id_producto'        => $fila['id_producto'] ?? null,
-                'id_origen_externo'  => $fila['id_origen_externo'] ?? null,
-                'sku'                => $fila['sku'] ?? null,
-                'cantidad_evento'    => $fila['cantidad_evento'] ?? null,
-                'mensaje'            => $fila['mensaje'] ?? null,
-            ];
-        } else {
-            throw new Exception(
-                "SP no devolvio respuesta para detalle $detalleUid"
-            );
+            $stmt->closeCursor();
         }
-
-        $stmt->closeCursor();
     }
 
     return $resultados;

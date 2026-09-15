@@ -1,8 +1,15 @@
 <?php
+/**
+ * tag-finalizado_dev.php - Endpoint DEV para TAG finalizado
+ *
+ * Versión dev que valida el payload con lecturas individuales
+ * y llama al SP por cada lectura usando lectura.cantidad y lectura.lectura_uid.
+ * NO modifica tag-finalizado.php productivo.
+ */
 
 require_once '../../config/acceso_sodimac_db.php';
 require_once '../../helpers/response.php';
-require_once 'sgo-captura.service.php';
+require_once 'sgo-captura.service_dev.php';
 
 corsHeaders();
 
@@ -35,7 +42,6 @@ $zonaNombre       = trim($input['zona_nombre'] ?? '');
 $zonaDescripcion  = trim($input['zona_descripcion'] ?? '');
 
 // ──────────── Normalizar zona_nombre ────────────
-// Mapeo de aliases antiguos de la APK a códigos oficiales de sod_cfg_tipo_ubicacion.
 $zonaAliases = [
     'BODEGA_TRASTIENDA' => 'BODEGA',
     'EXHIBICIONES'      => 'EXHIBICION',
@@ -166,6 +172,8 @@ if ($rowExistente && strtoupper(trim($rowExistente['estado'])) === 'PROCESADO') 
         'carga_id'        => (int)$rowExistente['id'],
         'total_productos' => isset($rowExistente['total_productos']) ? (int)$rowExistente['total_productos'] : $totalProductos,
         'total_unidades'  => isset($rowExistente['total_unidades']) ? (float)$rowExistente['total_unidades'] : $totalUnidades,
+        'total_lecturas'  => $totalLecturas,
+        'modo'            => 'DEV_CON_SP',
     ], 'TAG ya procesado anteriormente');
 }
 
@@ -290,7 +298,7 @@ try {
         $descripcion  = trim($detalle['descripcion'] ?? null);
 
         foreach ($detalle['lecturas'] as $lectura) {
-            $lecturaUid      = trim($lectura['lectura_uid']);
+            $lecturaUid     = trim($lectura['lectura_uid']);
             $cantidadLectura = (float)$lectura['cantidad'];
             $fechaHoraLectura = trim($lectura['fecha_hora']);
 
@@ -308,10 +316,10 @@ try {
         }
     }
 
-    // ──────────── Fase 5: Llamar servicio SGO para iteracion = 1 ────────────
+    // ──────────── Llamar servicio SGO DEV para iteracion = 1 ────────────
     $resultadosSgo = null;
     if ($iteracion === 1) {
-        $resultadosSgo = registrarCapturaInicialSgo($input, $detalles);
+        $resultadosSgo = registrarCapturaInicialSgoDev($input, $detalles);
 
         // Verificar que todos los resultados del SP hayan sido exitosos
         $todosOk = true;
@@ -333,7 +341,7 @@ try {
             ");
             $stmtEstado->execute([':carga_uid' => $cargaUid]);
         } else {
-            // Recopilar mensajes de error de los detalles fallidos
+            // Recopilar mensajes de error de las lecturas fallidas
             $errores = [];
             foreach ($resultadosSgo as $r) {
                 $resultado = strtoupper(trim($r['resultado'] ?? ''));
@@ -366,12 +374,14 @@ try {
         'carga_id'        => $cargaId,
         'total_productos' => $totalProductos,
         'total_unidades'  => $totalUnidades,
+        'total_lecturas'  => $totalLecturas,
+        'modo'            => 'DEV_CON_SP',
     ];
     if ($resultadosSgo !== null) {
         $response['resultados_sgo'] = $resultadosSgo;
     }
 
-    okResponse($response, $iteracion === 1 ? 'TAG procesado correctamente' : 'TAG recibido correctamente');
+    okResponse($response, $iteracion === 1 ? 'TAG procesado correctamente (DEV CON SP)' : 'TAG recibido correctamente (DEV)');
 
 } catch (PDOException $e) {
     if ($pdo->inTransaction()) {
