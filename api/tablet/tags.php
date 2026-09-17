@@ -21,29 +21,46 @@ if (empty($agendaId)) {
 
 try {
     $sql = "SELECT 
-        tg.id,
-        tg.cod_sod,
-        tg.tienda_id,
-        t.nombre AS tienda_nombre,
-        tg.tipo,
-        tg.estado,
-        COUNT(c.id) AS total_productos,
-        SUM(CASE WHEN c.cantidad > 0 THEN 1 ELSE 0 END) AS total_contados,
+        tg.id_tag,
+        tg.numero_tag,
+        tg.id_tipo_ubicacion,
+        tg.estado_tag,
+        tu.nombre_tipo_ubicacion,
+        tu.codigo_tipo_ubicacion,
+        CASE
+            WHEN LOWER(tu.nombre_tipo_ubicacion) LIKE '%altillo%' THEN 'ALTILLO'
+            WHEN LOWER(tu.nombre_tipo_ubicacion) LIKE '%punto de venta%'
+              OR LOWER(tu.nombre_tipo_ubicacion) LIKE '%punto venta%'
+              OR tu.codigo_tipo_ubicacion = 'PDV' THEN 'PDV'
+            ELSE 'OTRO'
+        END AS tipo_validacion,
+        COUNT(cd.id_conteo_det) AS total_productos,
+        SUM(CASE WHEN cd.cantidad > 0 THEN 1 ELSE 0 END) AS total_contados,
         CASE 
-            WHEN COUNT(c.id) = 0 THEN 0
-            ELSE ROUND(SUM(CASE WHEN c.cantidad > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(c.id))
+            WHEN COUNT(cd.id_conteo_det) = 0 THEN 0
+            ELSE ROUND(SUM(CASE WHEN cd.cantidad > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(cd.id_conteo_det))
         END AS porcentaje_avance,
-        COALESCE(v.estado, 'PENDIENTE') AS validacion_estado
-    FROM sod_tags tg
-    INNER JOIN sod_tiendas t ON tg.tienda_id = t.id
-    LEFT JOIN sod_capturas c ON tg.id = c.tag_id
-    LEFT JOIN sod_validaciones v ON tg.id = v.tag_id
-    WHERE tg.agenda_id = :agenda_id
-    GROUP BY tg.id, tg.cod_sod, tg.tienda_id, t.nombre, tg.tipo, tg.estado, v.estado
-    ORDER BY tg.tipo ASC, tg.cod_sod ASC";
+        COALESCE(
+            (SELECT estado_conteo 
+             FROM sod_inv_conteo c 
+             WHERE c.id_agenda = tg.id_agenda 
+               AND c.tipo_conteo = 'VALIDACION' 
+               AND c.fl_activo = 'S'
+             ORDER BY c.id_conteo DESC 
+             LIMIT 1), 
+            'PENDIENTE'
+        ) AS validacion_estado
+    FROM sod_inv_tag AS tg
+    LEFT JOIN sod_cfg_tipo_ubicacion AS tu ON tg.id_tipo_ubicacion = tu.id_tipo_ubicacion
+    LEFT JOIN sod_inv_conteo_det AS cd ON tg.id_tag = cd.id_tag AND cd.estado_registro = 'VIGENTE'
+    WHERE tg.id_agenda = :agenda_id
+      AND tg.fl_activo = 'S'
+    GROUP BY tg.id_tag, tg.numero_tag, tg.id_tipo_ubicacion, tg.estado_tag, 
+             tu.nombre_tipo_ubicacion, tu.codigo_tipo_ubicacion, tg.id_agenda
+    ORDER BY tu.nombre_tipo_ubicacion ASC, tg.numero_tag ASC";
 
     $stmt = $pdo->prepare($sql);
-    $stmt->execute([':agenda_id' => $agendaId]);
+    $stmt->execute([':agenda_id' => (int)$agendaId]);
     $tags = $stmt->fetchAll();
 
     okResponse($tags);

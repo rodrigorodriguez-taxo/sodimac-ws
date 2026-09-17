@@ -1,8 +1,8 @@
 <?php
 # ============================================================
 # ws/api/tablet/pre-variance/validar.php
-# POST { pre_variance_id, productos: [{ producto_id, estado, motivo }] }
-# Valida productos del Pre Variance
+# POST { agenda_id, productos: [{ producto_id, estado, motivo }] }
+# Valida productos del Pre Variance (diferencias C1 vs C2)
 # ============================================================
 
 require_once '../../../config/database.php';
@@ -16,27 +16,27 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 $input = getJsonInput();
 
-if (empty($input['pre_variance_id'])) {
-    errorResponse('Falta pre_variance_id');
+if (empty($input['agenda_id'])) {
+    errorResponse('Falta agenda_id');
 }
 
 if (empty($input['productos']) || !is_array($input['productos'])) {
     errorResponse('Falta array de productos');
 }
 
-$preVarianceId = $input['pre_variance_id'];
+$agendaId = $input['agenda_id'];
 $productos = $input['productos'];
 
 try {
     $pdo->beginTransaction();
 
-    // Actualizar cada producto
-    $sqlUpdate = "UPDATE sod_pre_variance_producto 
-        SET estado = :estado, 
-            motivo = :motivo,
-            validado_por = :validado_por,
-            validado_at = NOW()
-        WHERE id = :producto_id AND pre_variance_id = :pre_variance_id";
+    $sqlUpdate = "UPDATE sod_inv_resultado 
+        SET estado_revision = :estado,
+            motivo_decision_pendiente = :motivo,
+            usuario_calculo = :usuario,
+            fecha_calculo = NOW()
+        WHERE id_agenda = :agenda_id 
+        AND id_producto = :producto_id";
 
     $stmtUpdate = $pdo->prepare($sqlUpdate);
 
@@ -47,45 +47,19 @@ try {
         }
 
         $estado = $producto['estado'];
-        if (!in_array($estado, ['PENDIENTE', 'APROBADO', 'RECHAZADO'])) {
+        if (!in_array($estado, ['PENDIENTE', 'RECONTEO_SOLICITADO', 'RESUELTO', 'JUSTIFICADO'])) {
             $pdo->rollBack();
-            errorResponse('Estado inválido: ' . $estado);
+            errorResponse('Estado invalido: ' . $estado);
         }
 
         $stmtUpdate->execute([
-            ':producto_id' => $producto['producto_id'],
-            ':pre_variance_id' => $preVarianceId,
             ':estado' => $estado,
             ':motivo' => $producto['motivo'] ?? null,
-            ':validado_por' => 'AUDITOR', // En producción obtener del token
+            ':usuario' => $producto['login'] ?? 'AUDITOR',
+            ':agenda_id' => $agendaId,
+            ':producto_id' => $producto['producto_id'],
         ]);
     }
-
-    // Verificar si todos los productos están procesados
-    $sqlCheck = "SELECT 
-        COUNT(*) AS total,
-        SUM(CASE WHEN estado = 'PENDIENTE' THEN 1 ELSE 0 END) AS pendientes
-    FROM sod_pre_variance_producto
-    WHERE pre_variance_id = :pre_variance_id";
-
-    $stmtCheck = $pdo->prepare($sqlCheck);
-    $stmtCheck->execute([':pre_variance_id' => $preVarianceId]);
-    $check = $stmtCheck->fetch();
-
-    // Actualizar estado del Pre Variance
-    $nuevoEstado = $check['pendientes'] > 0 ? 'EN_CURSO' : 'APROBADO';
-    $sqlUpdatePV = "UPDATE sod_pre_variance 
-        SET estado = :estado,
-            validado_por = :validado_por,
-            validado_at = NOW()
-        WHERE id = :pre_variance_id";
-
-    $stmtUpdatePV = $pdo->prepare($sqlUpdatePV);
-    $stmtUpdatePV->execute([
-        ':estado' => $nuevoEstado,
-        ':validado_por' => 'AUDITOR',
-        ':pre_variance_id' => $preVarianceId,
-    ]);
 
     $pdo->commit();
 

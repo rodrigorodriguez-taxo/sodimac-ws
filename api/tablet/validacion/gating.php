@@ -21,11 +21,11 @@ try {
     // ── Obtener C1 ──────────────────────────────────────────
     $stmtC1 = $pdo->prepare(
         "SELECT id_conteo FROM sod_inv_conteo
-         WHERE id_agenda = :agenda_id AND numero_iteracion = 1
+         WHERE id_agenda = :a1 AND numero_iteracion = 1
            AND tipo_conteo = 'INICIAL' AND fl_activo = 'S'
          ORDER BY id_conteo DESC LIMIT 1"
     );
-    $stmtC1->execute([':agenda_id' => $agendaId]);
+    $stmtC1->execute([':a1' => $agendaId]);
     $c1 = $stmtC1->fetch();
     if (!$c1) errorResponse('No existe Conteo 1');
     $idC1 = (int)$c1['id_conteo'];
@@ -33,12 +33,12 @@ try {
     // ── Obtener C2 ──────────────────────────────────────────
     $stmtC2 = $pdo->prepare(
         "SELECT id_conteo FROM sod_inv_conteo
-         WHERE id_agenda = :agenda_id AND numero_iteracion = 2
+         WHERE id_agenda = :a2 AND numero_iteracion = 2
            AND tipo_conteo = 'VALIDACION' AND fl_activo = 'S'
            AND estado_conteo <> 'ANULADO'
          ORDER BY id_conteo DESC LIMIT 1"
     );
-    $stmtC2->execute([':agenda_id' => $agendaId]);
+    $stmtC2->execute([':a2' => $agendaId]);
     $c2 = $stmtC2->fetch();
     $idC2 = $c2 ? (int)$c2['id_conteo'] : 0;
 
@@ -52,20 +52,20 @@ try {
             CASE
                 WHEN EXISTS (
                     SELECT 1 FROM sod_inv_conteo_det AS d2
-                    WHERE d2.id_conteo = :id_c2
+                    WHERE d2.id_conteo = :c2_1
                       AND d2.id_reconteo IS NULL
                       AND d2.origen = 'SGO_ANALISTA'
                       AND d2.id_tag = d1.id_tag
                       AND d2.id_producto = d1.id_producto
                       AND d2.estado_registro = 'VIGENTE'
                       AND d2.id_origen_externo LIKE CONCAT(
-                          'SGO-VAL-LINEA-', :agenda_id, '-', d1.id_conteo_det, '-%'
+                          'SGO-VAL-LINEA-', :ag_1, '-', d1.id_conteo_det, '-%'
                       )
                 )
                 OR (
                     NOT EXISTS (
                         SELECT 1 FROM sod_inv_conteo_det AS ds
-                        WHERE ds.id_conteo = :id_c2
+                        WHERE ds.id_conteo = :c2_2
                           AND ds.id_reconteo IS NULL
                           AND ds.origen = 'SGO_ANALISTA'
                           AND ds.id_tag = d1.id_tag
@@ -78,7 +78,7 @@ try {
                     )
                     AND EXISTS (
                         SELECT 1 FROM sod_inv_conteo_det AS dl
-                        WHERE dl.id_conteo = :id_c2
+                        WHERE dl.id_conteo = :c2_3
                           AND dl.id_reconteo IS NULL
                           AND dl.origen = 'SGO_ANALISTA'
                           AND dl.id_tag = d1.id_tag
@@ -92,19 +92,22 @@ try {
         ) AS capturas_confirmadas
     FROM sod_inv_conteo_det AS d1
     INNER JOIN sod_inv_tag AS t ON t.id_tag = d1.id_tag
-           AND t.id_agenda = :agenda_id
+           AND t.id_agenda = :ag_2
            AND t.fl_activo = 'S'
            AND t.estado_tag <> 'ANULADO'
     LEFT JOIN sod_cfg_tipo_ubicacion AS tu ON tu.id_tipo_ubicacion = t.id_tipo_ubicacion
-    WHERE d1.id_conteo = :id_c1
+    WHERE d1.id_conteo = :c1_1
       AND d1.estado_registro = 'VIGENTE'
     GROUP BY t.id_tag, t.numero_tag, tu.codigo_tipo_ubicacion, tu.nombre_tipo_ubicacion";
 
     $stmtGate = $pdo->prepare($sqlGate);
     $stmtGate->execute([
-        ':id_c2' => $idC2,
-        ':agenda_id' => $agendaId,
-        ':id_c1' => $idC1,
+        ':c2_1' => $idC2,
+        ':c2_2' => $idC2,
+        ':c2_3' => $idC2,
+        ':ag_1' => $agendaId,
+        ':ag_2' => $agendaId,
+        ':c1_1' => $idC1,
     ]);
     $tagsGate = $stmtGate->fetchAll();
 
@@ -146,34 +149,36 @@ try {
         "SELECT COUNT(DISTINCT t.id_tag) AS cantidad
          FROM sod_inv_conteo_det AS d1
          INNER JOIN sod_inv_tag AS t ON t.id_tag = d1.id_tag
-                AND t.id_agenda = :agenda_id AND t.fl_activo = 'S'
+                AND t.id_agenda = :a3 AND t.fl_activo = 'S'
                 AND t.estado_tag <> 'ANULADO'
-         WHERE d1.id_conteo = :id_c1 AND d1.estado_registro = 'VIGENTE'
+         WHERE d1.id_conteo = :c1_2 AND d1.estado_registro = 'VIGENTE'
            AND EXISTS (
                SELECT 1 FROM sod_ope_agenda_zonificacion AS z
                INNER JOIN sod_ope_agenda_zonificacion_det AS zd
                        ON zd.id_zonificacion = z.id_zonificacion AND zd.fl_activo = 'S'
-               WHERE z.id_agenda = :agenda_id AND z.fl_activo = 'S'
+               WHERE z.id_agenda = :a4 AND z.fl_activo = 'S'
                  AND z.id_zonificacion = (
                      SELECT MAX(zx.id_zonificacion) FROM sod_ope_agenda_zonificacion AS zx
-                     WHERE zx.id_agenda = :agenda_id AND zx.fl_activo = 'S'
+                     WHERE zx.id_agenda = :a5 AND zx.fl_activo = 'S'
                  )
                  AND t.numero_tag BETWEEN zd.tag_desde AND zd.tag_hasta
            )"
     );
     $stmtZonif->execute([
-        ':agenda_id' => $agendaId,
-        ':id_c1' => $idC1,
+        ':a3' => $agendaId,
+        ':a4' => $agendaId,
+        ':a5' => $agendaId,
+        ':c1_2' => $idC1,
     ]);
     $tagsCubiertos = (int)$stmtZonif->fetchColumn();
 
     // ── TAGs total (no anulados) ────────────────────────────
     $stmtTotalTags = $pdo->prepare(
         "SELECT COUNT(*) FROM sod_inv_tag
-         WHERE id_agenda = :agenda_id AND fl_activo = 'S'
+         WHERE id_agenda = :a6 AND fl_activo = 'S'
            AND estado_tag <> 'ANULADO'"
     );
-    $stmtTotalTags->execute([':agenda_id' => $agendaId]);
+    $stmtTotalTags->execute([':a6' => $agendaId]);
     $totalTags = (int)$stmtTotalTags->fetchColumn();
 
     $cumple = $altillosOk && $pdvOk;

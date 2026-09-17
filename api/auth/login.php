@@ -37,25 +37,25 @@ if ($input['password'] !== $expected) {
 }
 
 try {
-    // debe remplazar por la segurdad de prepare y execute para evitar inyeccion sql
     $sql = "SELECT
-        su.login AS login,
-        ue.rut AS rut,
-        ue.rut_normalizado AS rut_normalizado
-    FROM sec_users AS su
-    INNER JOIN sod_sec_usuario_ext AS ue
-            ON CONVERT(su.login USING utf8mb4)
-            COLLATE utf8mb4_unicode_ci = ue.login
-    WHERE ue.rut_normalizado = :rut
-    AND su.active = 'Y'
-    AND ue.fl_activo = 'S'
+        login,
+        rut,
+        rut_normalizado,
+        nombres,
+        apellido_paterno,
+        apellido_materno,
+        tipo_usuario,
+        email
+    FROM sod_sec_usuario_ext
+    WHERE rut_normalizado = :rut
+    AND fl_activo = 'S'
     AND (
-        ue.fecha_inicio_vigencia IS NULL
-        OR ue.fecha_inicio_vigencia <= NOW()
+        fecha_inicio_vigencia IS NULL
+        OR fecha_inicio_vigencia <= NOW()
         )
     AND (
-        ue.fecha_fin_vigencia IS NULL
-        OR ue.fecha_fin_vigencia >= NOW()
+        fecha_fin_vigencia IS NULL
+        OR fecha_fin_vigencia >= NOW()
         )
     LIMIT 1";
 
@@ -76,11 +76,15 @@ try {
         errorResponse('Usuario no existe o inactivo', 401);
     }
 
+    $nombre = trim(($user['nombres'] ?? '') . ' ' . ($user['apellido_paterno'] ?? ''));
+
     okResponse([
         'user'  => [
-            'correo'          => $user['login'],
+            'correo'          => $user['email'] ?? $user['login'],
             'rut'             => $user['rut'],
             'rut_normalizado' => $user['rut_normalizado'],
+            'nombre'          => $nombre,
+            'perfil'          => $user['tipo_usuario'],
         ],
     ], 'Login exitoso');
 

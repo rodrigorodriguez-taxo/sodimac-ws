@@ -2,7 +2,7 @@
 # ============================================================
 # ws/api/tablet/cierres/estado.php
 # GET ?agenda_id=123
-# Retorna estado consolidado de todos los cierres de una agenda
+# Estado consolidado de cierres de una agenda
 # ============================================================
 
 require_once '../../../config/database.php';
@@ -20,62 +20,37 @@ if (empty($agendaId)) {
 }
 
 try {
-    // Obtener cierres
-    $sql = "SELECT 
-        c.id,
-        c.tipo_cierre,
-        c.estado,
-        c.productos_total,
-        c.productos_validados,
-        c.monto_total,
-        c.monto_diferencia,
-        c.cerrado_at
-    FROM sod_cierres c
-    WHERE c.agenda_id = :agenda_id
-    ORDER BY c.tipo_cierre ASC";
+    $preVar = $pdo->prepare("SELECT id_cierre_prevariance, estado_cierre, fecha_confirmacion
+        FROM sod_inv_prevariance_cierre WHERE id_agenda = :a LIMIT 1");
+    $preVar->execute([':a' => $agendaId]);
+    $pv = $preVar->fetch();
 
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([':agenda_id' => $agendaId]);
-    $cierres = $stmt->fetchAll();
+    $recCierre = $pdo->prepare("SELECT id_reconteo_cierre, estado_cierre, total_sku, total_corregidos
+        FROM sod_inv_reconteo_cierre WHERE id_agenda = :a AND fl_activo = 'S'
+        ORDER BY numero_version DESC LIMIT 1");
+    $recCierre->execute([':a' => $agendaId]);
+    $rc = $recCierre->fetch();
 
-    // Verificar prerequisitos
-    $preVarianceCerrado = false;
-    $recuentoCerrado = false;
-    $puedeCerrarFinal = false;
-
-    foreach ($cierres as $cierre) {
-        if ($cierre['tipo_cierre'] === 'PRE_VARIANCE' && $cierre['estado'] === 'COMPLETADO') {
-            $preVarianceCerrado = true;
-        }
-        if ($cierre['tipo_cierre'] === 'RECUENTO' && $cierre['estado'] === 'COMPLETADO') {
-            $recuentoCerrado = true;
-        }
-    }
-
-    $puedeCerrarFinal = $preVarianceCerrado && $recuentoCerrado;
-
-    // Verificar si hay cierres pendientes
-    $hayPreVariancePendiente = false;
-    $hayRecuentoPendiente = false;
-
-    foreach ($cierres as $cierre) {
-        if ($cierre['tipo_cierre'] === 'PRE_VARIANCE' && $cierre['estado'] === 'PENDIENTE') {
-            $hayPreVariancePendiente = true;
-        }
-        if ($cierre['tipo_cierre'] === 'RECUENTO' && $cierre['estado'] === 'PENDIENTE') {
-            $hayRecuentoPendiente = true;
-        }
-    }
+    $pvCerrado = $pv && in_array($pv['estado_cierre'], ['CERRADO', 'ENVIADO']);
+    $rcCerrado = $rc && in_array($rc['estado_cierre'], ['CERRADO', 'ENVIADO']);
 
     okResponse([
-        'cierres' => $cierres,
-        'pre_variance_cerrado' => $preVarianceCerrado,
-        'recuento_cerrado' => $recuentoCerrado,
-        'puede_cerrar_final' => $puedeCerrarFinal,
-        'hay_pre_variance_pendiente' => $hayPreVariancePendiente,
-        'hay_recuento_pendiente' => $hayRecuentoPendiente,
+        'pre_variance' => $pv ? [
+            'id' => $pv['id_cierre_prevariance'],
+            'estado' => $pv['estado_cierre'],
+            'fecha' => $pv['fecha_confirmacion'],
+        ] : null,
+        'pre_variance_cerrado' => $pvCerrado,
+        'recuento' => $rc ? [
+            'id' => $rc['id_reconteo_cierre'],
+            'estado' => $rc['estado_cierre'],
+            'total_sku' => $rc['total_sku'],
+            'total_corregidos' => $rc['total_corregidos'],
+        ] : null,
+        'recuento_cerrado' => $rcCerrado,
+        'puede_cerrar_final' => $pvCerrado && $rcCerrado,
     ]);
 
 } catch (PDOException $e) {
-    errorResponse('Error al obtener estado de cierres: ' . $e->getMessage(), 500);
+    errorResponse('Error: ' . $e->getMessage(), 500);
 }

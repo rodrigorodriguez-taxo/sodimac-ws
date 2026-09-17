@@ -20,21 +20,27 @@ if (empty($agendaId)) {
 }
 
 try {
-    // Obtener agenda
     $sql = "SELECT 
-        a.id,
-        a.fecha,
-        t.id AS tienda_id,
-        t.nombre AS tienda_nombre,
-        t.rut AS tienda_rut,
-        a.auditor_rut,
-        a.estado,
-        a.etapa,
-        a.checkin_at,
-        a.checkout_at
-    FROM sod_agendas_dia a
-    INNER JOIN sod_tiendas t ON a.tienda_id = t.id
-    WHERE a.id = :agenda_id
+        a.id_agenda,
+        a.fecha_agenda,
+        a.id_tienda,
+        t.nombre_tienda,
+        a.numero_agenda,
+        a.id_estado_agenda,
+        ea.codigo_estado,
+        a.fecha_hora_inicio,
+        a.fecha_hora_termino,
+        a.fecha_hora_cierre,
+        a.titulo_agenda,
+        a.categoria_muestra,
+        a.ultima_sincronizacion,
+        a.fl_incidencia,
+        a.observacion
+    FROM sod_ope_agenda AS a
+    INNER JOIN sod_cfg_tienda AS t ON a.id_tienda = t.id_tienda
+    INNER JOIN sod_ope_estado_agenda AS ea ON ea.id_estado_agenda = a.id_estado_agenda
+    WHERE a.id_agenda = :agenda_id
+      AND a.fl_activo = 'S'
     LIMIT 1";
 
     $stmt = $pdo->prepare($sql);
@@ -45,28 +51,28 @@ try {
         errorResponse('Agenda no encontrada', 404);
     }
 
-    // Obtener tags de la agenda
     $sqlTags = "SELECT 
-        tg.id,
-        tg.cod_sod,
-        tg.tienda_id,
-        t.nombre AS tienda_nombre,
-        tg.tipo,
-        tg.estado,
-        COUNT(c.id) AS total_productos,
-        SUM(CASE WHEN c.cantidad > 0 THEN 1 ELSE 0 END) AS total_contados,
+        tg.id_tag,
+        tg.numero_tag,
+        tg.id_tipo_ubicacion,
+        tu.nombre_tipo_ubicacion,
+        tu.codigo_tipo_ubicacion,
+        tg.estado_tag,
+        COUNT(md.id_producto) AS total_productos,
+        COUNT(DISTINCT cd.id_producto) AS total_contados,
         CASE 
-            WHEN COUNT(c.id) = 0 THEN 0
-            ELSE ROUND(SUM(CASE WHEN c.cantidad > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(c.id))
-        END AS porcentaje_avance,
-        COALESCE(v.estado, 'PENDIENTE') AS validacion_estado
-    FROM sod_tags tg
-    INNER JOIN sod_tiendas t ON tg.tienda_id = t.id
-    LEFT JOIN sod_capturas c ON tg.id = c.tag_id
-    LEFT JOIN sod_validaciones v ON tg.id = v.tag_id
-    WHERE tg.agenda_id = :agenda_id
-    GROUP BY tg.id, tg.cod_sod, tg.tienda_id, t.nombre, tg.tipo, tg.estado, v.estado
-    ORDER BY tg.tipo ASC, tg.cod_sod ASC";
+            WHEN COUNT(md.id_producto) = 0 THEN 0
+            ELSE ROUND(COUNT(DISTINCT cd.id_producto) * 100.0 / COUNT(md.id_producto))
+        END AS porcentaje_avance
+    FROM sod_inv_tag AS tg
+    INNER JOIN sod_cfg_tipo_ubicacion AS tu ON tg.id_tipo_ubicacion = tu.id_tipo_ubicacion
+    LEFT JOIN sod_inv_conteo_det AS cd ON cd.id_agenda = tg.id_agenda AND cd.id_tag = tg.id_tag AND cd.estado_registro = 'VIGENTE'
+    LEFT JOIN sod_inv_muestra_det AS md ON md.id_producto = cd.id_producto AND md.fl_activo = 'S'
+    WHERE tg.id_agenda = :agenda_id
+      AND tg.fl_activo = 'S'
+    GROUP BY tg.id_tag, tg.numero_tag, tg.id_tipo_ubicacion, tu.nombre_tipo_ubicacion, 
+             tu.codigo_tipo_ubicacion, tg.estado_tag
+    ORDER BY tu.codigo_tipo_ubicacion ASC, tg.numero_tag ASC";
 
     $stmtTags = $pdo->prepare($sqlTags);
     $stmtTags->execute([':agenda_id' => $agendaId]);

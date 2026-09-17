@@ -20,74 +20,46 @@ if (empty($agendaId)) {
 }
 
 try {
-    // Obtener cierres de la agenda
-    $sql = "SELECT 
-        c.id,
-        c.agenda_id,
-        c.tienda_id,
-        t.nombre AS tienda_nombre,
-        c.tipo_cierre,
-        c.estado,
-        c.productos_total,
-        c.productos_validados,
-        c.monto_total,
-        c.monto_diferencia,
-        c.observaciones,
-        c.creado_por,
-        c.creado_at,
-        c.cerrado_por,
-        c.cerrado_at
-    FROM sod_cierres c
-    INNER JOIN sod_tiendas t ON c.tienda_id = t.id
-    WHERE c.agenda_id = :agenda_id
-    ORDER BY c.tipo_cierre ASC, c.creado_at DESC";
+    $cierres = [];
 
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([':agenda_id' => $agendaId]);
-    $cierres = $stmt->fetchAll();
+    // 1. Pre Variance cierre
+    $stmtPV = $pdo->prepare(
+        "SELECT id_cierre_prevariance AS id, 'PRE_VARIANCE' AS tipo_cierre,
+                estado_cierre, observacion, login_confirmacion AS login_cierre, fecha_confirmacion AS fecha_hora_cierre
+         FROM sod_inv_prevariance_cierre
+         WHERE id_agenda = :agenda_id
+         ORDER BY id_cierre_prevariance DESC LIMIT 1"
+    );
+    $stmtPV->execute([':agenda_id' => $agendaId]);
+    $pv = $stmtPV->fetch();
+    if ($pv) $cierres[] = $pv;
 
-    // Si no hay cierres, crear uno de Pre Variance si aplica
-    if (empty($cierres)) {
-        // Verificar si hay Pre Variance aprobado
-        $sqlCheck = "SELECT 
-            COUNT(*) AS total,
-            SUM(CASE WHEN pv.estado = 'APROBADO' THEN 1 ELSE 0 END) AS aprobados
-        FROM sod_pre_variance pv
-        WHERE pv.agenda_id = :agenda_id";
+    // 2. Recuento cierre
+    $stmtRC = $pdo->prepare(
+        "SELECT id_reconteo_cierre AS id, 'RECUENTO' AS tipo_cierre,
+                estado_cierre, total_sku AS productos_total, total_corregidos AS productos_reconteados,
+                observacion, login_cierre, fecha_cierre AS fecha_hora_cierre
+         FROM sod_inv_reconteo_cierre
+         WHERE id_agenda = :agenda_id AND fl_activo = 'S'
+         ORDER BY numero_version DESC, id_reconteo_cierre DESC LIMIT 1"
+    );
+    $stmtRC->execute([':agenda_id' => $agendaId]);
+    $rc = $stmtRC->fetch();
+    if ($rc) $cierres[] = $rc;
 
-        $stmtCheck = $pdo->prepare($sqlCheck);
-        $stmtCheck->execute([':agenda_id' => $agendaId]);
-        $check = $stmtCheck->fetch();
-
-        if ($check['total'] > 0 && $check['aprobados'] > 0) {
-            // Obtener tienda de la agenda
-            $sqlTienda = "SELECT tienda_id FROM sod_agendas WHERE id = :agenda_id LIMIT 1";
-            $stmtTienda = $pdo->prepare($sqlTienda);
-            $stmtTienda->execute([':agenda_id' => $agendaId]);
-            $agendaInfo = $stmtTienda->fetch();
-
-            if ($agendaInfo) {
-                // Crear cierre de Pre Variance
-                $sqlCreate = "INSERT INTO sod_cierres 
-                    (agenda_id, tienda_id, tipo_cierre, estado, productos_total, productos_validados, monto_total, monto_diferencia, creado_por, creado_at)
-                    VALUES 
-                    (:agenda_id, :tienda_id, 'PRE_VARIANCE', 'PENDIENTE', 0, 0, 0, 0, 'SYSTEM', NOW())";
-
-                $stmtCreate = $pdo->prepare($sqlCreate);
-                $stmtCreate->execute([
-                    ':agenda_id' => $agendaId,
-                    ':tienda_id' => $agendaInfo['tienda_id'],
-                ]);
-
-                // Recargar cierres
-                $stmt->execute([':agenda_id' => $agendaId]);
-                $cierres = $stmt->fetchAll();
-            }
-        }
-    }
+    // 3. Estado agenda
+    $stmtAgenda = $pdo->prepare(
+        "SELECT ea.codigo_estado
+         FROM sod_ope_agenda AS a
+         INNER JOIN sod_ope_estado_agenda AS ea ON ea.id_estado_agenda = a.id_estado_agenda
+         WHERE a.id_agenda = :agenda_id AND a.fl_activo = 'S'"
+    );
+    $stmtAgenda->execute([':agenda_id' => $agendaId]);
+    $agenda = $stmtAgenda->fetch();
 
     okResponse([
         'cierres' => $cierres,
+        'estado_agenda' => $agenda ? $agenda['codigo_estado'] : 'DESCONOCIDO',
     ]);
 
 } catch (PDOException $e) {

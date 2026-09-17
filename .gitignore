@@ -33,3 +33,21 @@ nbproject/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Scripts de desarrollo (NO versionar)
+test_*.php
+copy_*.php
+create_*.php
+fix_*.php
+import_*.php
+check_*.php
+verify_*.php
+audit_*.php
+identify_*.php
+prepare_*.php
+recopy_*.php
+show_*.php
+dump_*.sql
+dump-*.sql
+*.json
+import_wrapper.sql
