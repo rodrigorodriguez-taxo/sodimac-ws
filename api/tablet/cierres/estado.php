@@ -31,8 +31,8 @@ try {
     $recCierre->execute([':a' => $agendaId]);
     $rc = $recCierre->fetch();
 
-    $pvCerrado = $pv && in_array($pv['estado_cierre'], ['CERRADO', 'ENVIADO']);
-    $rcCerrado = $rc && in_array($rc['estado_cierre'], ['CERRADO', 'ENVIADO']);
+    $pvCerrado = $pv && $pv['estado_cierre'] === 'CERRADO';
+    $rcCerrado = $rc && $rc['estado_cierre'] === 'CERRADO';
 
     okResponse([
         'pre_variance' => $pv ? [

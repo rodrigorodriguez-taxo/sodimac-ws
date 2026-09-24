@@ -48,8 +48,8 @@ try {
         errorResponse('Recuento no encontrado para esta agenda');
     }
 
-    $pvCerrado = in_array($preVar['estado_cierre'], ['CERRADO', 'ENVIADO']);
-    $rcCerrado = in_array($recuento['estado_cierre'], ['CERRADO', 'ENVIADO']);
+    $pvCerrado = $preVar['estado_cierre'] === 'CERRADO';
+    $rcCerrado = $recuento['estado_cierre'] === 'CERRADO';
 
     if (!$pvCerrado) {
         $updPV = $pdo->prepare("UPDATE sod_inv_prevariance_cierre 

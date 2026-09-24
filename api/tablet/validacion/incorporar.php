@@ -7,6 +7,8 @@
 
 require_once '../../../config/database.php';
 require_once '../../../helpers/response.php';
+require_once '../../../helpers/c3.php';
+require_once '../../../helpers/sync.php';
 
 corsHeaders();
 
@@ -50,18 +52,37 @@ try {
         throw new RuntimeException('El SKU no pertenece a la muestra vigente de la agenda.');
     }
 
-    // ── 2. Obtener C2 header ────────────────────────────────
+    // ── 2. Obtener/Crear C2 header ──────────────────────────
     $stmtC2 = $pdo->prepare(
         "SELECT id_conteo FROM sod_inv_conteo
-         WHERE id_agenda = :agenda_id AND numero_iteracion = 2
+         WHERE id_agenda = :id_agenda AND numero_iteracion = 2
            AND tipo_conteo = 'VALIDACION' AND fl_activo = 'S'
            AND estado_conteo <> 'ANULADO'
          ORDER BY id_conteo DESC LIMIT 1"
     );
-    $stmtC2->execute([':agenda_id' => $agendaId]);
+    $stmtC2->execute([':id_agenda' => $agendaId]);
     $c2 = $stmtC2->fetch();
-    if (!$c2) throw new RuntimeException('No existe Conteo 2 VALIDACION para esta agenda.');
-    $idC2 = (int)$c2['id_conteo'];
+    
+    if ($c2) {
+        $idC2 = (int)$c2['id_conteo'];
+    } else {
+        $stmtNew = $pdo->prepare(
+            "INSERT INTO sod_inv_conteo (
+                id_agenda, numero_iteracion, tipo_conteo, estado_conteo,
+                motivo, fecha_hora_inicio, login_responsable, fl_activo, usuario_creacion
+            ) VALUES (
+                :id_agenda, 2, 'VALIDACION', 'EN_PROCESO',
+                'Validacion operacional Sodimac desde App Tablet.',
+                NOW(), :login, 'S', :login2
+            )"
+        );
+        $stmtNew->execute([':id_agenda' => $agendaId, ':login' => $login, ':login2' => $login]);
+        $idC2 = (int)$pdo->lastInsertId();
+    }
+
+    if (!$idC2 || $idC2 <= 0) {
+        throw new RuntimeException('No fue posible crear/obtener Conteo 2 VALIDACION.');
+    }
 
     // ── 3. Marcar C2 viejos del TAG+SKU como REEMPLAZADO ────
     $stmtMark = $pdo->prepare(
@@ -104,20 +125,19 @@ try {
             :id_c2, NULL, :id_agenda, :tag_id, :id_producto,
             :login, :cantidad, NOW(3), NOW(3),
             'APP_TABLET', 'SGO_ANALISTA', :id_origen, 'VIGENTE',
-            :obs, NULL, :login
+            :obs, NULL, :login2
         )"
     );
     $stmtInsert->execute([
         ':id_c2' => $idC2, ':id_agenda' => $agendaId,
         ':tag_id' => $tagId, ':id_producto' => $idProducto,
-        ':login' => $login, ':cantidad' => $cantidad,
+        ':login' => $login, ':login2' => $login, ':cantidad' => $cantidad,
         ':id_origen' => $idOrigen, ':obs' => $obs,
     ]);
 
-    // ── 5. Invalidar C3 y recalcular ────────────────────────
-    $pdo->exec("CALL PRC_SOD_INV_C3_INVALIDAR_POSTERIOR_V1({$agendaId}, " . $pdo->quote($login) . ")");
-    $pdo->exec("CALL PRC_SOD_AGENDA_METRICAS_RECALCULAR_CORE_V1({$agendaId}, " . $pdo->quote($login) . ")");
-
+    // ── 5. Invalidar C3 (si justificado) + encolar recálculo ──
+    $invalidarC3 = c3_invalidacion_justificada($pdo, $agendaId);
+    sync_marcar_pendiente($pdo, $agendaId, 'VALIDACION', $invalidarC3, $login);
     $pdo->commit();
 
     okResponse([

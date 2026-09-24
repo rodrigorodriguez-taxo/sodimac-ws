@@ -24,8 +24,20 @@ try {
 
     // 1. Pre Variance cierre
     $stmtPV = $pdo->prepare(
-        "SELECT id_cierre_prevariance AS id, 'PRE_VARIANCE' AS tipo_cierre,
-                estado_cierre, observacion, login_confirmacion AS login_cierre, fecha_confirmacion AS fecha_hora_cierre
+        "SELECT id_cierre_prevariance AS id, id_agenda AS agenda_id, id_tienda AS tienda_id,
+                'PRE_VARIANCE' AS tipo_cierre,
+                CASE estado_cierre
+                    WHEN 'PENDIENTE_ENVIO' THEN 'PENDIENTE'
+                    WHEN 'CERRADO' THEN 'COMPLETADO'
+                    WHEN 'ANULADO' THEN 'ANULADO'
+                    ELSE estado_cierre
+                END AS estado,
+                estado_cierre AS estado_cierre,
+                COALESCE(observacion, '') AS observaciones,
+                login_confirmacion AS creado_por,
+                fecha_confirmacion AS creado_at,
+                login_confirmacion AS cerrado_por,
+                fecha_confirmacion AS cerrado_at
          FROM sod_inv_prevariance_cierre
          WHERE id_agenda = :agenda_id
          ORDER BY id_cierre_prevariance DESC LIMIT 1"
@@ -57,8 +69,32 @@ try {
     $stmtAgenda->execute([':agenda_id' => $agendaId]);
     $agenda = $stmtAgenda->fetch();
 
+    // 4. Snapshot inmutable
+    $stmtSnap = $pdo->prepare(
+        "SELECT id_cierre_agenda, codigo_cierre, numero_version, fl_inmutable,
+                total_stock_unidades, total_fisico_unidades, total_diferencia_unidades,
+                total_valor_stock, total_valor_fisico, hash_cabecera
+         FROM sod_inv_cierre_agenda
+         WHERE id_agenda = :agenda_id AND fl_inmutable = 'S'
+         ORDER BY numero_version DESC LIMIT 1"
+    );
+    $stmtSnap->execute([':agenda_id' => $agendaId]);
+    $snapshot = $stmtSnap->fetch();
+
     okResponse([
         'cierres' => $cierres,
+        'cierre_agenda' => $snapshot ? [
+            'id_cierre_agenda' => (int)$snapshot['id_cierre_agenda'],
+            'codigo_cierre' => $snapshot['codigo_cierre'],
+            'numero_version' => (int)$snapshot['numero_version'],
+            'fl_inmutable' => $snapshot['fl_inmutable'],
+            'total_stock_unidades' => (float)$snapshot['total_stock_unidades'],
+            'total_fisico_unidades' => (float)$snapshot['total_fisico_unidades'],
+            'total_diferencia_unidades' => (float)$snapshot['total_diferencia_unidades'],
+            'total_valor_stock' => (float)$snapshot['total_valor_stock'],
+            'total_valor_fisico' => (float)$snapshot['total_valor_fisico'],
+            'hash_cabecera' => $snapshot['hash_cabecera'],
+        ] : null,
         'estado_agenda' => $agenda ? $agenda['codigo_estado'] : 'DESCONOCIDO',
     ]);
 

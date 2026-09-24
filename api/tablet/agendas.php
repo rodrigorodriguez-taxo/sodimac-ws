@@ -22,9 +22,22 @@ if (empty($rut)) {
 $rutNormalizado = preg_replace('/[^0-9kK]/', '', trim($rut));
 
 try {
+    // Buscar el login del usuario por RUT
+    $stmtUser = $pdo->prepare(
+        "SELECT login FROM sod_sec_usuario_ext WHERE rut_normalizado = :rut AND fl_activo = 'S' LIMIT 1"
+    );
+    $stmtUser->execute([':rut' => $rutNormalizado]);
+    $user = $stmtUser->fetch();
+
+    if (!$user) {
+        errorResponse('Usuario no encontrado', 404);
+    }
+
+    $login = $user['login'];
+
     $sql = "SELECT 
         a.id_agenda AS id,
-        a.fecha_agenda AS fecha,
+        DATE_FORMAT(a.fecha_agenda, '%Y-%m-%d') AS fecha,
         a.id_tienda,
         t.nombre_tienda AS tienda_nombre,
         t.direccion AS tienda_direccion,
@@ -38,16 +51,30 @@ try {
         a.ultima_sincronizacion,
         a.fl_incidencia,
         a.observacion,
-        COUNT(tg.id_tag) AS total_tags,
-        SUM(CASE WHEN tg.estado_tag = 'FINALIZADO' THEN 1 ELSE 0 END) AS tags_contados,
+        COUNT(DISTINCT tg.id_tag) AS total_tags,
+        COUNT(DISTINCT CASE WHEN EXISTS (
+            SELECT 1 FROM sod_inv_conteo_det cd
+            INNER JOIN sod_inv_conteo c ON c.id_conteo = cd.id_conteo
+            WHERE cd.id_tag = tg.id_tag AND c.tipo_conteo = 'INICIAL' AND cd.estado_registro = 'VIGENTE'
+        ) THEN tg.id_tag END) AS tags_contados,
+        COUNT(DISTINCT CASE WHEN EXISTS (
+            SELECT 1 FROM sod_inv_conteo_det cd
+            INNER JOIN sod_inv_conteo c ON c.id_conteo = cd.id_conteo
+            WHERE cd.id_tag = tg.id_tag AND c.tipo_conteo = 'VALIDACION' AND cd.origen = 'SGO_ANALISTA' AND cd.estado_registro = 'VIGENTE'
+        ) THEN tg.id_tag END) AS tags_validados,
         CASE 
-            WHEN COUNT(tg.id_tag) = 0 THEN 0
-            ELSE ROUND(SUM(CASE WHEN tg.estado_tag = 'FINALIZADO' THEN 1 ELSE 0 END) * 100.0 / COUNT(tg.id_tag))
+            WHEN COUNT(DISTINCT tg.id_tag) = 0 THEN 0
+            ELSE ROUND(COUNT(DISTINCT CASE WHEN EXISTS (
+                SELECT 1 FROM sod_inv_conteo_det cd
+                INNER JOIN sod_inv_conteo c ON c.id_conteo = cd.id_conteo
+                WHERE cd.id_tag = tg.id_tag AND c.tipo_conteo = 'VALIDACION' AND cd.origen = 'SGO_ANALISTA' AND cd.estado_registro = 'VIGENTE'
+            ) THEN tg.id_tag END) * 100.0 / COUNT(DISTINCT tg.id_tag))
         END AS porcentaje_avance
     FROM sod_ope_agenda AS a
     INNER JOIN sod_cfg_tienda AS t ON a.id_tienda = t.id_tienda
     INNER JOIN sod_ope_estado_agenda AS e ON a.id_estado_agenda = e.id_estado_agenda
-    LEFT JOIN sod_inv_tag AS tg ON a.id_agenda = tg.id_agenda
+    INNER JOIN sod_ope_agenda_usuario AS au ON au.id_agenda = a.id_agenda AND au.login = :login AND au.fl_activo = 'S'
+    LEFT JOIN sod_inv_tag AS tg ON a.id_agenda = tg.id_agenda AND tg.fl_activo = 'S'
     WHERE a.fl_activo = 'S'
     GROUP BY a.id_agenda, a.fecha_agenda, a.id_tienda, t.nombre_tienda, t.direccion, a.numero_agenda, 
              e.codigo_estado, a.fecha_hora_inicio, a.fecha_hora_termino, a.fecha_hora_cierre,
@@ -55,7 +82,7 @@ try {
     ORDER BY a.fecha_agenda DESC, t.nombre_tienda ASC";
 
     $stmt = $pdo->prepare($sql);
-    $stmt->execute();
+    $stmt->execute([':login' => $login]);
     $agendas = $stmt->fetchAll();
 
     okResponse($agendas);

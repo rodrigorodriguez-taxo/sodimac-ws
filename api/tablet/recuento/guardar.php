@@ -7,6 +7,7 @@
 
 require_once '../../../config/database.php';
 require_once '../../../helpers/response.php';
+require_once '../../../helpers/sync.php';
 
 corsHeaders();
 
@@ -185,8 +186,8 @@ try {
         ]);
     }
 
-    // ── 4. Recalcular métricas ──────────────────────────────
-    $pdo->exec("CALL PRC_SOD_AGENDA_METRICAS_RECALCULAR_CORE_V1({$agendaId}, " . $pdo->quote($login) . ")");
+    // ── 4. Encolar recálculo canónico (invalidar_c3=false, igual que SC) ──
+    sync_marcar_pendiente($pdo, $agendaId, 'RECUENTO', false, $login);
 
     $pdo->commit();
 

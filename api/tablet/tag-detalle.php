@@ -41,7 +41,6 @@ try {
     LEFT JOIN sod_cfg_tipo_ubicacion AS tu ON tu.id_tipo_ubicacion = t.id_tipo_ubicacion
     WHERE t.id_tag = :tag_id
       AND t.id_agenda = :agenda_id
-      AND t.fl_activo = 'S'
     LIMIT 1";
 
     $stmtTag = $pdo->prepare($sqlTag);
@@ -89,7 +88,7 @@ try {
     $idC2 = $c2 ? $c2['id_conteo'] : null;
 
     // Obtener capturas C1 del TAG
-    $sqlCapturas = "SELECT
+    $sqlC1 = "SELECT
         d1.id_conteo_det,
         d1.id_producto,
         p.sku AS producto_sku,
@@ -105,11 +104,68 @@ try {
       AND d1.estado_registro = 'VIGENTE'
     ORDER BY d1.fecha_hora_captura ASC";
 
-    $stmtCapturas = $pdo->prepare($sqlCapturas);
-    $stmtCapturas->execute([':id_c1' => $idC1, ':tag_id' => $tagId]);
-    $capturas = $stmtCapturas->fetchAll();
+    $stmtC1 = $pdo->prepare($sqlC1);
+    $stmtC1->execute([':id_c1' => $idC1, ':tag_id' => $tagId]);
+    $capturas = $stmtC1->fetchAll();
 
-    // Para cada captura C1, buscar si tiene C2 (validación)
+    // Obtener productos C1 para excluir del segundo query
+    $idsC1 = array_column($capturas, 'id_producto');
+
+    // Obtener items incorporados solo en C2 (no existen en C1)
+    if ($idC2) {
+        if (!empty($idsC1)) {
+            $placeholders = implode(',', array_fill(0, count($idsC1), '?'));
+            $sqlInc = "SELECT
+                d2.id_conteo_det,
+                d2.id_producto,
+                p.sku AS producto_sku,
+                p.descripcion_producto AS producto_nombre,
+                0 AS c1_cantidad,
+                d2.fecha_hora_captura,
+                d2.login_operador,
+                d2.estado_registro
+            FROM sod_inv_conteo_det AS d2
+            INNER JOIN sod_cfg_producto AS p ON p.id_producto = d2.id_producto
+            WHERE d2.id_conteo = ?
+              AND d2.id_tag = ?
+              AND d2.id_reconteo IS NULL
+              AND d2.origen = 'SGO_ANALISTA'
+              AND d2.estado_registro = 'VIGENTE'
+              AND d2.id_producto NOT IN ($placeholders)
+              AND d2.id_origen_externo LIKE ?";
+
+            $paramsInc = array_merge([$idC2, $tagId], $idsC1, ['SGO-VAL-TAG-INC-%']);
+            $stmtInc = $pdo->prepare($sqlInc);
+            $stmtInc->execute($paramsInc);
+            $incorporadas = $stmtInc->fetchAll();
+            $capturas = array_merge($capturas, $incorporadas);
+        } else {
+            $sqlInc2 = "SELECT
+                d2.id_conteo_det,
+                d2.id_producto,
+                p.sku AS producto_sku,
+                p.descripcion_producto AS producto_nombre,
+                0 AS c1_cantidad,
+                d2.fecha_hora_captura,
+                d2.login_operador,
+                d2.estado_registro
+            FROM sod_inv_conteo_det AS d2
+            INNER JOIN sod_cfg_producto AS p ON p.id_producto = d2.id_producto
+            WHERE d2.id_conteo = :id_c2
+              AND d2.id_tag = :tag_id2
+              AND d2.id_reconteo IS NULL
+              AND d2.origen = 'SGO_ANALISTA'
+              AND d2.estado_registro = 'VIGENTE'
+              AND d2.id_origen_externo LIKE :patron";
+
+            $stmtInc2 = $pdo->prepare($sqlInc2);
+            $stmtInc2->execute([':id_c2' => $idC2, ':tag_id2' => $tagId, ':patron' => 'SGO-VAL-TAG-INC-%']);
+            $incorporadas = $stmtInc2->fetchAll();
+            $capturas = array_merge($capturas, $incorporadas);
+        }
+    }
+
+    // Para cada captura, buscar si tiene C2 (validación)
     $capturasConEstado = [];
     $totalConfirmadas = 0;
     $totalModificadas = 0;
@@ -120,8 +176,39 @@ try {
         $c2Cant = null;
         $motivo = null;
 
-        if ($idC2) {
-            // Buscar C2 que corresponda a esta línea C1
+        // Item incorporado (solo existe en C2, c1_cantidad = 0)
+        if ((float)$cap['c1_cantidad'] === 0.0 && $idC2) {
+            $sqlC2Inc = "SELECT
+                d2.cantidad AS c2_cantidad,
+                d2.observacion
+            FROM sod_inv_conteo_det AS d2
+            WHERE d2.id_conteo = :id_c2
+              AND d2.id_tag = :tag_id
+              AND d2.id_producto = :id_producto
+              AND d2.id_reconteo IS NULL
+              AND d2.origen = 'SGO_ANALISTA'
+              AND d2.estado_registro = 'VIGENTE'
+              AND d2.id_origen_externo LIKE 'SGO-VAL-TAG-INC-%'
+            LIMIT 1";
+
+            $stmtC2Inc = $pdo->prepare($sqlC2Inc);
+            $stmtC2Inc->execute([
+                ':id_c2' => $idC2,
+                ':tag_id' => $tagId,
+                ':id_producto' => $cap['id_producto'],
+            ]);
+            $c2Det = $stmtC2Inc->fetch();
+
+            if ($c2Det) {
+                $estado = 'MODIFICADA';
+                $totalModificadas++;
+                $c2Cant = $c2Det['c2_cantidad'];
+                $motivo = $c2Det['observacion'];
+            } else {
+                $totalPendientes++;
+            }
+        } elseif ($idC2) {
+            // Item normal (C1 + posible C2)
             $sqlC2Det = "SELECT
                 d2.cantidad AS c2_cantidad,
                 d2.observacion,
@@ -133,7 +220,7 @@ try {
               AND d2.id_reconteo IS NULL
               AND d2.origen = 'SGO_ANALISTA'
               AND d2.estado_registro = 'VIGENTE'
-              AND d2.id_origen_externo LIKE CONCAT('SGO-VAL-LINEA-', :agenda_id, '-', :id_c1_det, '-%')
+            ORDER BY d2.id_conteo_det DESC
             LIMIT 1";
 
             $stmtC2Det = $pdo->prepare($sqlC2Det);
@@ -141,8 +228,6 @@ try {
                 ':id_c2' => $idC2,
                 ':tag_id' => $tagId,
                 ':id_producto' => $cap['id_producto'],
-                ':agenda_id' => $agendaId,
-                ':id_c1_det' => $cap['id_conteo_det'],
             ]);
             $c2Det = $stmtC2Det->fetch();
 

@@ -7,6 +7,8 @@
 
 require_once '../../../config/database.php';
 require_once '../../../helpers/response.php';
+require_once '../../../helpers/c3.php';
+require_once '../../../helpers/sync.php';
 
 corsHeaders();
 
@@ -38,7 +40,7 @@ try {
     ) VALUES (
         :id_agenda, 2, 'VALIDACION', 'EN_PROCESO',
         'Validacion operacional Sodimac desde App Tablet.',
-        NOW(), :login, 'S', :login
+        NOW(), :login, 'S', :login2
     )
     ON DUPLICATE KEY UPDATE
         id_conteo = LAST_INSERT_ID(id_conteo),
@@ -49,7 +51,7 @@ try {
         usuario_modificacion = VALUES(usuario_creacion)";
 
     $stmtC2 = $pdo->prepare($sqlC2);
-    $stmtC2->execute([':id_agenda' => $agendaId, ':login' => $login]);
+    $stmtC2->execute([':id_agenda' => $agendaId, ':login' => $login, ':login2' => $login]);
     $idC2 = $pdo->lastInsertId();
 
     if (!$idC2 || (int)$idC2 <= 0) {
@@ -107,7 +109,7 @@ try {
         :id_c2, NULL, :id_agenda, :id_tag, :id_producto,
         :login, :cantidad, NOW(3), NOW(3),
         'APP_TABLET', 'SGO_ANALISTA', :id_origen, 'VIGENTE',
-        :observacion, :id_motivo_correccion, :login
+        :observacion, :id_motivo_correccion, :login2
     )";
 
     $stmtInsert = $pdo->prepare($sqlInsert);
@@ -168,6 +170,7 @@ try {
             ':id_origen'             => $idOrigen,
             ':observacion'           => $obs,
             ':id_motivo_correccion'  => $idMotivo,
+            ':login2'                => $login,
         ]);
     }
 
@@ -185,14 +188,9 @@ try {
     );
     $stmtAudit->execute([':login' => $login, ':id_agenda' => $agendaId]);
 
-    // ── 5. Invalidar C3 posterior y recalcular ──────────────
-    $invalidarC3 = true;
-
-    if ($invalidarC3) {
-        $pdo->exec("CALL PRC_SOD_INV_C3_INVALIDAR_POSTERIOR_V1({$agendaId}, " . $pdo->quote($login) . ")");
-    }
-
-    $pdo->exec("CALL PRC_SOD_AGENDA_METRICAS_RECALCULAR_CORE_V1({$agendaId}, " . $pdo->quote($login) . ")");
+    // ── 5. Invalidar C3 (si justificado) + encolar recálculo ──
+    $invalidarC3 = c3_invalidacion_justificada($pdo, $agendaId);
+    sync_marcar_pendiente($pdo, $agendaId, 'VALIDACION', $invalidarC3, $login);
 
     $pdo->commit();
 

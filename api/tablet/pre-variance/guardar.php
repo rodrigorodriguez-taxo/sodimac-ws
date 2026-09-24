@@ -7,6 +7,8 @@
 
 require_once '../../../config/database.php';
 require_once '../../../helpers/response.php';
+require_once '../../../helpers/c3.php';
+require_once '../../../helpers/sync.php';
 
 corsHeaders();
 
@@ -35,7 +37,7 @@ try {
     ) VALUES (
         :id_agenda, 2, 'VALIDACION', 'EN_PROCESO',
         'Pre Variance desde App Tablet.',
-        NOW(), :login, 'S', :login
+        NOW(), :login, 'S', :login2
     )
     ON DUPLICATE KEY UPDATE
         id_conteo = LAST_INSERT_ID(id_conteo),
@@ -46,7 +48,7 @@ try {
         usuario_modificacion = VALUES(usuario_creacion)";
 
     $stmtC2 = $pdo->prepare($sqlC2);
-    $stmtC2->execute([':id_agenda' => $agendaId, ':login' => $login]);
+    $stmtC2->execute([':id_agenda' => $agendaId, ':login' => $login, ':login2' => $login]);
     $idC2 = $pdo->lastInsertId();
 
     if (!$idC2 || (int)$idC2 <= 0) {
@@ -91,7 +93,7 @@ try {
         :id_c2, NULL, :id_agenda, :id_tag, :id_producto,
         :login, :cantidad, NOW(3), NOW(3),
         'APP_TABLET', 'SGO_PREVARIANCE', :id_origen, 'VIGENTE',
-        :observacion, :id_motivo_correccion, :login
+        :observacion, :id_motivo_correccion, :login2
     )";
 
     $stmtInsert = $pdo->prepare($sqlInsert);
@@ -135,12 +137,40 @@ try {
             ':id_origen'             => $idOrigen,
             ':observacion'           => $obs,
             ':id_motivo_correccion'  => $idMotivo,
+            ':login2'                => $login,
         ]);
     }
 
-    // ── 4. Invalidar C3 posterior y recalcular ──────────────
-    $pdo->exec("CALL PRC_SOD_INV_C3_INVALIDAR_POSTERIOR_V1({$agendaId}, " . $pdo->quote($login) . ")");
-    $pdo->exec("CALL PRC_SOD_AGENDA_METRICAS_RECALCULAR_CORE_V1({$agendaId}, " . $pdo->quote($login) . ")");
+    // ── 4. Crear registro de cierre Pre Variance ──────────────
+    $sqlCierre = "INSERT INTO sod_inv_prevariance_cierre (
+        id_agenda, id_tienda, estado_cierre, fecha_confirmacion,
+        login_confirmacion, confirmacion_texto, usuario_creacion
+    ) VALUES (
+        :id_agenda, :id_tienda, 'PENDIENTE_ENVIO', NOW(3),
+        :login, 'Pre Variance aprobado desde App Tablet.', :login2
+    )
+    ON DUPLICATE KEY UPDATE
+        estado_cierre = 'PENDIENTE_ENVIO',
+        fecha_confirmacion = NOW(3),
+        login_confirmacion = VALUES(login_confirmacion),
+        confirmacion_texto = VALUES(confirmacion_texto),
+        fecha_modificacion = NOW(3),
+        usuario_modificacion = VALUES(usuario_creacion)";
+
+    // Obtener id_tienda de la agenda
+    $stmtTienda = $pdo->prepare("SELECT id_tienda FROM sod_ope_agenda WHERE id_agenda = :id_agenda LIMIT 1");
+    $stmtTienda->execute([':id_agenda' => $agendaId]);
+    $tienda = $stmtTienda->fetch();
+    $idTienda = $tienda ? (int)$tienda['id_tienda'] : 0;
+
+    $stmtCierre = $pdo->prepare($sqlCierre);
+    $stmtCierre->execute([':id_agenda' => $agendaId, ':id_tienda' => $idTienda, ':login' => $login, ':login2' => $login]);
+
+    // ── 5. Invalidar C3 (si justificado) + encolar recálculo ──
+    // Réplica ScriptCase: invalidar y recalcular vía cola durable;
+    // worker (cron) ejecuta PRC_SOD_INV_C3_INVALIDAR_POSTERIOR_V1 + CORE_V1.
+    $invalidarC3 = c3_invalidacion_justificada($pdo, $agendaId);
+    sync_marcar_pendiente($pdo, $agendaId, 'PREVARIANCE', $invalidarC3, $login);
 
     $pdo->commit();
 
