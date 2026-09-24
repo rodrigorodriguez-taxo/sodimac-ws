@@ -1,0 +1,1 @@
+DESCRIBE sod_inv_conteo_det;
