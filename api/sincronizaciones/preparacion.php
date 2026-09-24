@@ -49,29 +49,38 @@ try {
 
 function prepararSincronizacion(PDO $pdo, string $correo, string $rut): array
 {
+    global $requestId, $stage;
+
     /* --- 1. validar usuario ------------------------------------------------- */
+    $stage = 'usuario';
     $usuario = obtenerUsuario($pdo, $correo, $rut);
     if (!$usuario) {
         errorResponse('Usuario no existe o inactivo', 401);
     }
 
     $login = $usuario['login'];
+    error_log("[prep_prod:{$requestId}] etapa=usuario login={$login}");
 
     /* --- 2. tiendas autorizadas (maestro) ----------------------------------- */
+    $stage = 'tiendas';
     $tiendas = obtenerTiendas($pdo, $login);
     if (!$tiendas) {
         errorResponse('No existen tiendas asignadas', 401);
     }
+    error_log("[prep_prod:{$requestId}] etapa=tiendas count=" . count($tiendas));
 
     /*
      * --- 3. ventana operativa: hoy y mañana ----------------------------------
      * El servidor ya corre en hora de Chile (UTC-4), así que date('Y-m-d') es
      * directamente el día del operador — no hace falta ajustar zona horaria.
      */
+    $stage = 'fechas';
     $fechaHoy     = date('Y-m-d');
     $fechaManiana = date('Y-m-d', strtotime($fechaHoy . ' +1 day'));
+    error_log("[prep_prod:{$requestId}] etapa=fechas hoy={$fechaHoy} maniana={$fechaManiana}");
 
     /* --- 4. separar por perfil ---------------------------------------------- */
+    $stage = 'perfil';
     if (($usuario['tipo_usuario'] ?? '') === 'ANALISTA_CLIENTE') {
         return prepararSincronizacionAnalista($pdo, $usuario, $tiendas, $fechaHoy);
     }
@@ -106,6 +115,7 @@ function tiendaDeAgenda(array $agenda): array
 
 function prepararSincronizacionOperador(PDO $pdo, array $usuario, array $tiendas, array $fechas): array
 {
+    global $requestId, $stage;
     $login = $usuario['login'];
 
     /*
@@ -119,22 +129,32 @@ function prepararSincronizacionOperador(PDO $pdo, array $usuario, array $tiendas
      */
     $jornadas = [];
     foreach ($fechas as $fecha) {
+        $stage = "agendas_{$fecha}";
         $agendas = obtenerAgendas($pdo, $login, $fecha);
         if (!$agendas) {
+            error_log("[prep_prod:{$requestId}] etapa=agendas fecha={$fecha} resultado=VACIO");
             continue;
         }
+        error_log("[prep_prod:{$requestId}] etapa=agendas fecha={$fecha} count=" . count($agendas));
 
         $agendaSeleccionada = current($agendas);
 
+        $stage = "codigos_agenda_{$fecha}";
         $filasCodigos = obtenerCodigosAgenda($pdo, (int) $agendaSeleccionada['id_agenda'], $login);
         if (!$filasCodigos) {
+            error_log("[prep_prod:{$requestId}] etapa=codigos_agenda fecha={$fecha} agenda={$agendaSeleccionada['id_agenda']} filas=NULL");
             continue;
         }
+        error_log("[prep_prod:{$requestId}] etapa=codigos_agenda fecha={$fecha} agenda={$agendaSeleccionada['id_agenda']} filas=" . count($filasCodigos));
+
+        $stage = "agrupar_{$fecha}";
+        $productos = agruparProductosConCodigos($filasCodigos);
+        error_log("[prep_prod:{$requestId}] etapa=agrupar fecha={$fecha} productos=" . count($productos));
 
         $jornadas[] = [
             'evento'    => construirEventoDesdeAgenda($agendaSeleccionada, tiendaDeAgenda($agendaSeleccionada)),
             'muestra'   => construirMuestraDesdeAgenda($agendaSeleccionada),
-            'productos' => agruparProductosConCodigos($filasCodigos),
+            'productos' => $productos,
         ];
     }
 
@@ -1258,8 +1278,27 @@ function obtenerUbicacionesMultiplesRecuento(PDO $pdo, int $idAgenda, array $sku
 
 function obtenerUsuario(PDO $pdo, string $correo, string $rut): ?array
 {
+    /*
+     * V6.1 - RESOLUCION CANONICA DE IDENTIDAD PDA
+     *
+     * La APK puede llegar con:
+     * - login canonico sin formato   (ej. 175662111)
+     * - login historico/legacy       (ej. MILKA / 17424656-4)
+     * - RUT formateado               (ej. 17.566.211-1)
+     *
+     * La identidad operativa del SGO SIEMPRE debe ser ue.login.
+     * No se debe devolver su.login, porque sec_users conserva cuentas legacy.
+     */
+    $rutNormalizado = strtoupper(
+        preg_replace('/[^0-9Kk]/', '', trim($rut))
+    );
+
+    if ($rutNormalizado === '') {
+        return null;
+    }
+
     $stmt = $pdo->prepare("SELECT
-        su.login                        AS login,
+        ue.login                        AS login,
         ue.rut                          AS rut,
         ue.rut_normalizado              AS rut_normalizado,
 
@@ -1277,31 +1316,84 @@ function obtenerUsuario(PDO $pdo, string $correo, string $rut): ?array
         ue.tipo_usuario                 AS tipo_usuario,
         ue.fl_usuario_cliente           AS usuario_cliente
 
-    FROM sec_users AS su
+    FROM sod_sec_usuario_ext AS ue
 
-    INNER JOIN sod_sec_usuario_ext AS ue
-            ON CONVERT(TRIM(su.login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
-               =
-               CONVERT(TRIM(ue.login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+    WHERE BINARY ue.rut_normalizado = BINARY :rut_normalizado
+      AND ue.fl_activo = 'S'
+      AND (ue.fecha_inicio_vigencia IS NULL OR ue.fecha_inicio_vigencia <= NOW())
+      AND (ue.fecha_fin_vigencia IS NULL OR ue.fecha_fin_vigencia >= NOW())
 
-    WHERE (
-            CONVERT(TRIM(su.login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
-            = CONVERT(TRIM(:login_1) USING utf8mb4) COLLATE utf8mb4_unicode_ci
-            OR
-            CONVERT(TRIM(su.email) USING utf8mb4) COLLATE utf8mb4_unicode_ci
-            = CONVERT(TRIM(:login_2) USING utf8mb4) COLLATE utf8mb4_unicode_ci
-        )
-    AND ue.rut_normalizado = :rut_normalizado
-    AND su.active = 'Y'
-    AND ue.fl_activo = 'S'
-    AND (ue.fecha_inicio_vigencia IS NULL OR ue.fecha_inicio_vigencia <= NOW())
-    AND (ue.fecha_fin_vigencia IS NULL OR ue.fecha_fin_vigencia >= NOW())
+      AND EXISTS (
+            SELECT 1
+            FROM sec_users AS su
+            WHERE su.active = 'Y'
+              AND (
+                    CONVERT(TRIM(su.login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+                    =
+                    CONVERT(TRIM(:login_1) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+
+                    OR
+
+                    CONVERT(TRIM(COALESCE(su.email, '')) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+                    =
+                    CONVERT(TRIM(:login_2) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+
+                    OR
+
+                    BINARY UPPER(
+                        REPLACE(
+                            REPLACE(
+                                REPLACE(
+                                    REPLACE(TRIM(su.login), '.', ''),
+                                '-', ''),
+                            ' ', ''),
+                        CHAR(9), '')
+                    ) = BINARY :rut_login
+
+                    OR
+
+                    BINARY UPPER(
+                        REPLACE(
+                            REPLACE(
+                                REPLACE(
+                                    REPLACE(TRIM(COALESCE(su.rut, '')), '.', ''),
+                                '-', ''),
+                            ' ', ''),
+                        CHAR(9), '')
+                    ) = BINARY :rut_sec
+                  )
+
+              /*
+               * La cuenta sec_users encontrada debe pertenecer a la misma
+               * identidad funcional. Esto permite legacy -> canonico por RUT.
+               */
+              AND (
+                    CONVERT(TRIM(su.login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+                    =
+                    CONVERT(TRIM(ue.login) USING utf8mb4) COLLATE utf8mb4_unicode_ci
+
+                    OR
+
+                    BINARY UPPER(
+                        REPLACE(
+                            REPLACE(
+                                REPLACE(
+                                    REPLACE(TRIM(COALESCE(su.rut, '')), '.', ''),
+                                '-', ''),
+                            ' ', ''),
+                        CHAR(9), '')
+                    ) = BINARY ue.rut_normalizado
+                  )
+          )
+
     LIMIT 1");
 
     $stmt->execute([
         ':login_1'         => $correo,
         ':login_2'         => $correo,
-        ':rut_normalizado' => $rut,
+        ':rut_normalizado' => $rutNormalizado,
+        ':rut_login'       => $rutNormalizado,
+        ':rut_sec'         => $rutNormalizado,
     ]);
 
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -1620,43 +1712,16 @@ function resolverAgendaMuestra(PDO $pdo, int $idAgenda, string $login): ?array
 
 function obtenerCodigosMuestra(PDO $pdo, int $idMuestra): ?array
 {
+    global $requestId;
+
     $sql = "SELECT DISTINCT
         cod.id_muestra_det,
         cod.id_producto,
         cod.codigo_ingreso AS codigo_lectura,
         cod.tipo_codigo,
 
-        CASE
-            WHEN CONVERT(cod.tipo_codigo USING utf8mb4) COLLATE utf8mb4_unicode_ci = 'SKU' COLLATE utf8mb4_unicode_ci
-                THEN NULL
-            ELSE cod.codigo_ingreso
-        END AS codigo_barras,
-
-        md.orden_muestra,
-        md.fl_obligatorio AS obligatorio,
-        md.prioridad,
-        md.observacion,
-        md.clacom_origen,
-
         p.sku,
-        p.descripcion_producto AS descripcion,
-        p.unidad_medida,
-        p.valor_referencia,
-        p.fl_producto_critico AS producto_critico,
-        p.fl_alto_valor AS producto_alto_valor,
-
-        cc.id_clasificacion_comercial,
-        cc.clacom,
-        cc.codigo_departamento,
-        cc.departamento,
-        cc.codigo_familia,
-        cc.familia,
-        cc.codigo_subfamilia,
-        cc.subfamilia,
-        cc.codigo_grupo,
-        cc.grupo,
-        cc.codigo_conjunto,
-        cc.conjunto
+        p.descripcion_producto AS descripcion
 
     FROM
     (
@@ -1720,10 +1785,6 @@ function obtenerCodigosMuestra(PDO $pdo, int $idMuestra): ?array
             ON p.id_producto = cod.id_producto
            AND p.fl_activo = 'S'
 
-    LEFT JOIN sod_cfg_clasificacion_comercial AS cc
-           ON cc.id_clasificacion_comercial = md.id_clasificacion_comercial
-          AND cc.fl_activo = 'S'
-
     ORDER BY
         md.orden_muestra ASC,
         p.sku ASC,
@@ -1735,17 +1796,43 @@ function obtenerCodigosMuestra(PDO $pdo, int $idMuestra): ?array
         END ASC,
         cod.codigo_ingreso ASC";
 
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([
+    $params = [
         ':id_muestra_sku'      => $idMuestra,
         ':id_muestra_snapshot' => $idMuestra,
         ':id_muestra_legacy'   => $idMuestra,
         ':id_muestra_join'     => $idMuestra,
-    ]);
+    ];
 
-    $filas = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $transientErrors = ['08S01', '1053', '2006', '2013'];
 
-    return $filas ?: null;
+    for ($attempt = 0; $attempt < 2; $attempt++) {
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $filas = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            if ($attempt > 0) {
+                error_log("[prep_prod:{$requestId}] obtenerCodigosMuestra retry EXITOSO id_muestra={$idMuestra} filas=" . count($filas));
+            }
+            return $filas ?: null;
+        } catch (PDOException $e) {
+            $code = $e->getCode();
+            $isTransient = false;
+            foreach ($transientErrors as $te) {
+                if (strpos($code, $te) !== false || strpos($e->getMessage(), $te) !== false) {
+                    $isTransient = true;
+                    break;
+                }
+            }
+            if ($isTransient && $attempt === 0) {
+                error_log("[prep_prod:{$requestId}] obtenerCodigosMuestra RETRY id_muestra={$idMuestra} error={$e->getMessage()}");
+                usleep(250000);
+                continue;
+            }
+            throw $e;
+        }
+    }
+
+    return null;
 }
 
 /* ============================================================================
