@@ -1,7 +1,9 @@
-<?php
+﻿<?php
 # ============================================================
 # ws/api/auth/login.php
 # POST { rut: "12345678-5", password: "123456" }
+# Contrato alineado a main (correo, rut, rut_normalizado).
+# Query sin sec_users por ahora — ver Finding JWT (pendiente).
 # ============================================================
 
 require_once '../../config/database.php';
@@ -40,12 +42,7 @@ try {
     $sql = "SELECT
         login,
         rut,
-        rut_normalizado,
-        nombres,
-        apellido_paterno,
-        apellido_materno,
-        tipo_usuario,
-        email
+        rut_normalizado
     FROM sod_sec_usuario_ext
     WHERE rut_normalizado = :rut
     AND fl_activo = 'S'
@@ -66,29 +63,21 @@ try {
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
 
-    // $queryFinal = debugQuery($sql, $params);
-    // echo '<pre>';var_dump($queryFinal);exit;
-    
     $user = $stmt->fetch();
-    
 
     if (!$user) {
         errorResponse('Usuario no existe o inactivo', 401);
     }
 
-    $nombre = trim(($user['nombres'] ?? '') . ' ' . ($user['apellido_paterno'] ?? ''));
-
     okResponse([
         'user'  => [
-            'correo'          => $user['email'] ?? $user['login'],
+            'correo'          => $user['login'],
             'rut'             => $user['rut'],
             'rut_normalizado' => $user['rut_normalizado'],
-            'nombre'          => $nombre,
-            'perfil'          => $user['tipo_usuario'],
         ],
     ], 'Login exitoso');
 
 } catch (PDOException $e) {
     errorResponse($e, 500);
-    
+
 }
