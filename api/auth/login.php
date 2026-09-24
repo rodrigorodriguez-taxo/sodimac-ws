@@ -2,8 +2,6 @@
 # ============================================================
 # ws/api/auth/login.php
 # POST { rut: "12345678-5", password: "123456" }
-# Contrato alineado a main (correo, rut, rut_normalizado).
-# Query sin sec_users por ahora — ver Finding JWT (pendiente).
 # ============================================================
 
 require_once '../../config/database.php';
@@ -39,20 +37,25 @@ if ($input['password'] !== $expected) {
 }
 
 try {
+    // debe remplazar por la segurdad de prepare y execute para evitar inyeccion sql
     $sql = "SELECT
-        login,
-        rut,
-        rut_normalizado
-    FROM sod_sec_usuario_ext
-    WHERE rut_normalizado = :rut
-    AND fl_activo = 'S'
+        su.login AS login,
+        ue.rut AS rut,
+        ue.rut_normalizado AS rut_normalizado
+    FROM sec_users AS su
+    INNER JOIN sod_sec_usuario_ext AS ue
+            ON CONVERT(su.login USING utf8mb4)
+            COLLATE utf8mb4_unicode_ci = ue.login
+    WHERE ue.rut_normalizado = :rut
+    AND su.active = 'Y'
+    AND ue.fl_activo = 'S'
     AND (
-        fecha_inicio_vigencia IS NULL
-        OR fecha_inicio_vigencia <= NOW()
+        ue.fecha_inicio_vigencia IS NULL
+        OR ue.fecha_inicio_vigencia <= NOW()
         )
     AND (
-        fecha_fin_vigencia IS NULL
-        OR fecha_fin_vigencia >= NOW()
+        ue.fecha_fin_vigencia IS NULL
+        OR ue.fecha_fin_vigencia >= NOW()
         )
     LIMIT 1";
 
@@ -63,7 +66,11 @@ try {
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
 
+    // $queryFinal = debugQuery($sql, $params);
+    // echo '<pre>';var_dump($queryFinal);exit;
+    
     $user = $stmt->fetch();
+    
 
     if (!$user) {
         errorResponse('Usuario no existe o inactivo', 401);
@@ -79,5 +86,5 @@ try {
 
 } catch (PDOException $e) {
     errorResponse($e, 500);
-
+    
 }
